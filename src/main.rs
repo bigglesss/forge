@@ -1,16 +1,18 @@
 use std::path::PathBuf;
 
-use bevy::render::render_resource::SamplerDescriptor;
-use bevy::render::texture::ImageSettings;
+use bevy::{prelude::*, render::render_resource::{Extent3d, TextureDimension, TextureFormat}};
+
+use bevy::render::mesh::{self, PrimitiveTopology};
+use bevy::render::{render_resource::SamplerDescriptor, texture::ImageSampler};
 use bevy::utils::HashMap;
 use bevy::window::PresentMode;
-use wgpu_types::AddressMode;
+
+use bevy_flycam::{NoCameraPlayerPlugin, FlyCam, MovementSettings};
+
+use wgpu_types::{AddressMode, FilterMode};
+
 use wow_bin::parser;
 use wow_bin::types::chunks;
-
-use bevy::{prelude::*, render::render_resource::{Extent3d, TextureDimension, TextureFormat}};
-use bevy_flycam::{NoCameraPlayerPlugin, FlyCam, MovementSettings};
-use bevy::render::mesh::{self, PrimitiveTopology};
 
 
 fn main() {
@@ -32,14 +34,6 @@ fn main() {
             present_mode: PresentMode::Immediate,
             ..default()
         })
-        .insert_resource(ImageSettings {
-            default_sampler: SamplerDescriptor {
-                address_mode_u: AddressMode::Repeat,
-                address_mode_v: AddressMode::Repeat,
-                ..default()
-            }
-        })
-        .insert_resource(Msaa { samples: 1 })
         .insert_resource(vec![adt, adt2, adt3, adt4])
         .insert_resource(HashMap::<(String, usize), Handle<StandardMaterial>>::new())
         .add_plugins(DefaultPlugins)
@@ -63,10 +57,21 @@ fn create_material_from_blp(
     let blp = parser::parse_blp(PathBuf::from(&filename))
         .expect(format!("BLPs should be valid: {}", &filename).as_str());
 
-    let tex = Image::new(
+    let mut tex = Image::new(
         Extent3d {width: blp.width as u32, height: blp.height as u32, ..default()}, 
         TextureDimension::D2, blp.mipmaps[0].decompressed.clone(), 
         TextureFormat::Rgba8Unorm
+    );
+
+    // Wrap u and v values, to allow for easier tiling.
+    tex.sampler_descriptor = ImageSampler::Descriptor(
+        SamplerDescriptor {
+            mag_filter: FilterMode::Linear,
+            min_filter: FilterMode::Linear,
+            address_mode_u: AddressMode::Repeat,
+            address_mode_v: AddressMode::Repeat,
+            ..default()
+        }
     );
 
     let texture_handle = textures.add(tex);
@@ -141,8 +146,6 @@ fn create_chunk_heightmesh(
     for (i, position) in chunk.mcvt.heights.iter().enumerate() {
         let position = [position.x, position.z, position.y];
         let normal = [chunk.mcnr.normals[i].x as f32, chunk.mcnr.normals[i].z as f32, chunk.mcnr.normals[i].y as f32];
-
-        let inner = (i % 17) > 8;
 
         positions.push(position);
         normals.push(normal);
