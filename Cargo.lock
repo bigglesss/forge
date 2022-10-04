@@ -1491,7 +1491,7 @@ dependencies = [
  "bevy",
  "bevy_flycam",
  "wgpu-types",
- "wow_bin",
+ "wow_chunky",
 ]
 
 [[package]]
@@ -3358,7 +3358,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "wow_bin"
+name = "wow_chunky"
 version = "0.1.0"
 dependencies = [
  "anyhow",

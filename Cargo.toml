@@ -17,4 +17,4 @@ opt-level = 3
 bevy = "0.8.1"
 bevy_flycam = "0.8.1"
 wgpu-types = "0.13.2"
-wow_bin = { path = "../wow_bin" }
+wow_chunky = { path = "../wow_chunky" }
