@@ -100,7 +100,7 @@ fn process_alpha_map(
     textures: &mut ResMut<Assets<Image>>,
 ) -> Handle<Image> {
     // Multiply alphas by 17 to readjust the range from 0-15 to 0-255.
-    let data = data.into_iter().map(|v| v * 17).collect();
+    let data: Vec<u8> = data.into_iter().map(|v| v * 17).collect();
 
     let mut tex = Image::new(
         Extent3d {width: 64, height: 64, ..default()}, 
@@ -272,9 +272,6 @@ fn setup(
 
     commands.insert_resource(chunk_lookup);
 
-    let random_chunk_heights = &adts[0].mcnk.last().unwrap()
-        .mcvt.heights;
-
     commands.spawn_bundle(DirectionalLightBundle {
         directional_light: DirectionalLight {
             illuminance: 10000.0,
@@ -290,7 +287,7 @@ fn setup(
     });
 
     commands.spawn_bundle(Camera3dBundle {
-        transform: Transform::from_xyz(random_chunk_heights[10].x, random_chunk_heights[10].z, random_chunk_heights[10].y).looking_at(Vec3::ZERO, Vec3::Y),
+        transform: Transform::from_xyz(-14246.663, 93.41158, 229.796333).looking_at(Vec3::ZERO, Vec3::Y),
         ..default()
     }).insert(FlyCam);
 }

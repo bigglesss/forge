@@ -41,17 +41,15 @@ var alpha_4: texture_2d<f32>;
 @group(1) @binding(14)
 var alpha_4_sampler: sampler;
 
-// TODO: Investigate alpha map positioning/rotation.
-// Heightmap chunks look correct, and flow together nicely, but textures are clearly rotated and don't connect properly.
-
 @fragment
 fn fragment(
     #import bevy_pbr::mesh_vertex_output
 ) -> @location(0) vec4<f32> {
     let distance = uv - material.base_positions.xy;
 
-    let x_n = distance.x / material.base_positions.z;
-    let y_n = distance.y / material.base_positions.w;
+    // For some reason x + y are flipped here, perhaps I made a mistake somewhere.
+    let x_n = (distance.y / material.base_positions.z);
+    let y_n = (distance.x / material.base_positions.w);
 
     let uv_alpha = vec2<f32>(x_n, y_n);
 
@@ -69,5 +67,5 @@ fn fragment(
     // finalColor = tex0 * (1.0 - (alpha1 + alpha2 + alpha3)) + tex1 * alpha1 + tex2 * alpha2 + tex3 * alpha3
     var final_color: vec4<f32> = layer_1_color * (1.0 - (alpha_2_value + alpha_3_value + alpha_4_value)) + (layer_2_color * alpha_2_value) + (layer_3_color * alpha_3_value) + (layer_4_color * alpha_4_value);
 
-    return (final_color);
+    return (final_color * world_normal.y);
 }
