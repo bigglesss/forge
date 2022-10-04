@@ -9,29 +9,26 @@ pub struct CustomMaterial {
     #[texture(1)]
     #[sampler(2)]
     pub layer_1: Option<Handle<Image>>,
+
     #[texture(3)]
     #[sampler(4)]
-    pub alpha_1: Option<Handle<Image>>,
-
+    pub layer_2: Option<Handle<Image>>,
     #[texture(5)]
     #[sampler(6)]
-    pub layer_2: Option<Handle<Image>>,
-    #[texture(7)]
-    #[sampler(8)]
     pub alpha_2: Option<Handle<Image>>,
 
-    #[texture(9)]
-    #[sampler[10]]
+    #[texture(7)]
+    #[sampler[8]]
     pub layer_3: Option<Handle<Image>>,
-    #[texture(11)]
-    #[sampler(12)]
+    #[texture(9)]
+    #[sampler(10)]
     pub alpha_3: Option<Handle<Image>>,
 
+    #[texture(11)]
+    #[sampler(12)]
+    pub layer_4: Option<Handle<Image>>,
     #[texture(13)]
     #[sampler(14)]
-    pub layer_4: Option<Handle<Image>>,
-    #[texture(15)]
-    #[sampler(16)]
     pub alpha_4: Option<Handle<Image>>,
 }
 

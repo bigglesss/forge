@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
-use bevy::{prelude::*, render::render_resource::{Extent3d, TextureDimension, TextureFormat}};
+use bevy::{prelude::*, render::render_resource::{Extent3d, TextureDimension, TextureFormat}, utils::hashbrown::HashMap};
+use bevy_egui::{egui, EguiContext, EguiPlugin};
 
 use bevy::render::mesh::{self, PrimitiveTopology};
 use bevy::render::{render_resource::SamplerDescriptor, texture::ImageSampler};
-use bevy::utils::HashMap;
 use bevy::window::PresentMode;
 
 use bevy_flycam::{NoCameraPlayerPlugin, FlyCam, MovementSettings};
@@ -44,12 +44,14 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_plugin(MaterialPlugin::<CustomMaterial>::default())
         .add_plugin(NoCameraPlayerPlugin)
+        .add_plugin(EguiPlugin)
         .insert_resource(MovementSettings {
             sensitivity: 0.00010,
             speed: 20.0,
         })
         .add_startup_system(render_terrain)
         .add_startup_system(setup)
+        .add_system(ui_example)
         .run();
 }
 
@@ -138,21 +140,21 @@ fn render_terrain(
         }
 
         for chunk in adt.mcnk.iter() {
+            // The first layer never uses alpha.
             let mut layers: Vec<Option<Handle<Image>>> = vec![None, None, None, None];
-            // There can be a maximum of 4 layers.
-            for (i, l) in chunk.mcly.layers.iter().enumerate() {
-                let id = l.texture_id as usize;
-                layers[i] = blp_lookup.get(&(adt.filename.clone(), id)).and_then(|t| Some(t.clone()));
-            }
-
             let mut alphas: Vec<Option<Handle<Image>>> = vec![
-                Some(process_alpha_map(&vec![15 as u8; 64*64], &mut textures)),
                 Some(process_alpha_map(&vec![0 as u8; 64*64], &mut textures)),
                 Some(process_alpha_map(&vec![0 as u8; 64*64], &mut textures)),
                 Some(process_alpha_map(&vec![0 as u8; 64*64], &mut textures)),
             ];
-            for (i, l) in chunk.mcal.layers.iter().enumerate() {
-                let alpha_map = process_alpha_map(&l.alpha_map, &mut textures);
+
+            for (i, texture_layer) in chunk.mcly.layers.iter().enumerate() {
+                let texture_id = texture_layer.texture_id as usize;
+                layers[i] = blp_lookup.get(&(adt.filename.clone(), texture_id)).and_then(|t| Some(t.clone()));
+            }
+
+            for (i, alpha_layer) in chunk.mcal.layers.iter().enumerate() {
+                let alpha_map = process_alpha_map(&alpha_layer.alpha_map, &mut textures);
                 alphas[i] = Some(alpha_map);
             }
 
@@ -234,24 +236,42 @@ fn create_chunk_heightmesh(
         mesh: meshes.add(mesh),
         // material: materials.add(Color::rgb(0.2, 0.2, 0.2).into()),
         material: materials.add(CustomMaterial {
-            base_positions: Vec4::new(min_position[0], min_position[2], max_position[0] - min_position[0], max_position[2] - min_position[2]),
+            base_positions: Vec4::new(chunk.position.x, chunk.position.y, max_position[0] - min_position[0], max_position[2] - min_position[2]),
             layer_1: layers[0].clone(),
-            alpha_1: alphas[0].clone(),
             layer_2: layers[1].clone(),
-            alpha_2: alphas[1].clone(),
+            alpha_2: alphas[0].clone(),
             layer_3: layers[2].clone(),
-            alpha_3: alphas[2].clone(),
+            alpha_3: alphas[1].clone(),
             layer_4: layers[3].clone(),
-            alpha_4: alphas[3].clone(),
+            alpha_4: alphas[2].clone(),
         }),
         ..default()
     });
+}
+
+#[derive(Debug, Eq, Hash, PartialEq)]
+struct ChunkCoords {
+    x: i32,
+    y: i32,
 }
 
 fn setup(
     mut commands: Commands,
     adts: Res<Vec<parser::adt::ADT>>,
     ) {
+    let mut chunk_lookup: HashMap<ChunkCoords, (parser::adt::ADT, chunks::MCNK)> = HashMap::new();
+    for adt in adts.iter() {
+        for chunk in adt.mcnk.iter() {
+            let c = ChunkCoords {
+                x: (chunk.position.x / 33.334).floor() as i32,
+                y: (chunk.position.y / 33.334).floor() as i32,
+            };
+            chunk_lookup.insert(c, (adt.clone(), chunk.clone()));
+        }
+    }
+
+    commands.insert_resource(chunk_lookup);
+
     let random_chunk_heights = &adts[0].mcnk.last().unwrap()
         .mcvt.heights;
 
@@ -275,3 +295,24 @@ fn setup(
     }).insert(FlyCam);
 }
 
+fn ui_example(
+    mut egui_context: ResMut<EguiContext>,
+    query: Query<&mut Transform, With<FlyCam>>,
+    chunk_lookup: Res<HashMap<ChunkCoords, (parser::adt::ADT, chunks::MCNK)>>,
+) {
+    let cam_pos: Vec3 = query.single().translation;
+
+    let location = chunk_lookup.get(&ChunkCoords {
+        x: (cam_pos.x / 33.334).floor() as i32,
+        y: (cam_pos.z / 33.334).floor() as i32,
+    });
+
+    egui::Window::new("Info panel").show(egui_context.ctx_mut(), |ui| {
+        ui.label(format!("Position: {:?}", cam_pos));
+
+        if let Some(location) = location {
+            let (adt, chunk) = location;
+            ui.label(format!("Chunk: ({}) ({}, {}) {:#?}", adt.filename, chunk.x, chunk.y, chunk.mcly.layers));
+        }
+    });
+}
