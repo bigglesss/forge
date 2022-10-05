@@ -65,19 +65,7 @@ fn fragment(
     var alpha_4_value: f32 = textureSample(alpha_4, alpha_4_sampler, uv_alpha).r;
 
     // finalColor = tex0 * (1.0 - (alpha1 + alpha2 + alpha3)) + tex1 * alpha1 + tex2 * alpha2 + tex3 * alpha3
-    var final_color: vec4<f32> = layer_1_color * (1.0 - (alpha_2_value + alpha_3_value + alpha_4_value));
-
-    if (layer_2_color.x != 0.0 && layer_2_color.y != 0.0 && layer_2_color.z != 0.0) {
-        final_color = final_color + (layer_2_color * alpha_2_value);
-    }
-
-    if (layer_3_color.x != 0.0 && layer_3_color.y != 0.0 && layer_3_color.z != 0.0) {
-        final_color = final_color + (layer_3_color * alpha_3_value);
-    }
-
-    if (layer_4_color.x != 0.0 && layer_4_color.y != 0.0 && layer_4_color.z != 0.0) {
-        final_color = final_color + (layer_4_color * alpha_4_value);
-    }
+    var final_color: vec4<f32> = layer_1_color * (1.0 - (alpha_2_value + alpha_3_value + alpha_4_value)) + (layer_2_color * alpha_2_value) + (layer_3_color * alpha_3_value) + (layer_4_color * alpha_4_value);
 
     return (final_color * world_normal.y);
 }

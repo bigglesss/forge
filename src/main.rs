@@ -24,13 +24,13 @@ fn main() {
     // Store in some kind of HashMap resource of X/Y -> ADT?
     // Should probably load a WDT instead and pick the four centre chunks to render.
     // Maybe use a smaller WDT to test.
-    let adt = parser::adt::ADT::from_wdt(&wdt, 31, 58)
+    let adt = parser::adt::ADT::from_wdt(&wdt, 31, 40)
         .expect("ADT should parse correctly.");
-    let adt2 = parser::adt::ADT::from_wdt(&wdt, 32, 58)
+    let adt2 = parser::adt::ADT::from_wdt(&wdt, 32, 40)
         .expect("ADT should parse correctly.");
-    let adt3 = parser::adt::ADT::from_wdt(&wdt, 31, 59)
+    let adt3 = parser::adt::ADT::from_wdt(&wdt, 31, 41)
         .expect("ADT should parse correctly.");
-    let adt4 = parser::adt::ADT::from_wdt(&wdt, 32, 59)
+    let adt4 = parser::adt::ADT::from_wdt(&wdt, 32, 41)
         .expect("ADT should parse correctly.");
 
     App::new()
@@ -47,7 +47,7 @@ fn main() {
         .add_plugin(EguiPlugin)
         .insert_resource(MovementSettings {
             sensitivity: 0.00010,
-            speed: 20.0,
+            speed: 30.0,
         })
         .add_startup_system(render_terrain)
         .add_startup_system(setup)
@@ -84,10 +84,16 @@ fn process_blp(
     raw_filename: &String,
     textures: &mut ResMut<Assets<Image>>,
 ) -> Handle<Image> {
-    let filename = format!("./test_data/{}", raw_filename.replace("\\", "/"));
+    let specular_filename = format!("./test_data/{}_s.blp", raw_filename.replace("\\", "/").replace(".blp", ""));
+    let normal_filename = format!("./test_data/{}", raw_filename.replace("\\", "/"));
 
-    let blp = parser::parse_blp(PathBuf::from(&filename))
-        .expect(format!("BLPs should be valid: {}", &filename).as_str());
+    let specular_path = PathBuf::from(&specular_filename);
+    let normal_path = PathBuf::from(&normal_filename);
+
+    let path = if specular_path.exists() {specular_path} else {normal_path};
+
+    let blp = parser::parse_blp(&path)
+        .expect(format!("BLPs should be valid: {:?}", &path).as_str());
 
     let texture = generate_image_from_buffer(blp.width, blp.height, &blp.mipmaps[0].decompressed);
     let texture_handle = textures.add(texture);
@@ -139,9 +145,10 @@ fn render_terrain(
             }
         }
 
+        // Render chunks.
         for chunk in adt.mcnk.iter() {
-            // The first layer never uses alpha.
             let mut layers: Vec<Option<Handle<Image>>> = vec![None, None, None, None];
+            // The first layer never uses alpha.
             let mut alphas: Vec<Option<Handle<Image>>> = vec![
                 Some(process_alpha_map(&vec![0 as u8; 64*64], &mut textures)),
                 Some(process_alpha_map(&vec![0 as u8; 64*64], &mut textures)),
@@ -272,8 +279,10 @@ fn setup(
 
     commands.insert_resource(chunk_lookup);
 
+    let _initial_position = Vec3::new(adts[0].mcnk[0].position.x, adts[0].mcnk[0].position.y, adts[0].mcnk[0].position.z);
+
     commands.spawn_bundle(Camera3dBundle {
-        transform: Transform::from_xyz(adts[0].mcnk[0].position.x, adts[0].mcnk[0].position.y, adts[0].mcnk[0].position.z).looking_at(Vec3::ZERO, Vec3::Y),
+        transform: Transform::from_xyz(-4337.3545, 13.121, -143.148).looking_at(Vec3::ZERO, Vec3::Y),
         ..default()
     }).insert(FlyCam);
 
@@ -289,21 +298,21 @@ fn ui_example(
 
     let chunk_coords = ChunkCoords {
         x: ((cam_pos.x / 33.334) + 1.0).floor() as i32,
-        y: (cam_pos.z / 33.334).floor() as i32,
+        y: ((cam_pos.z / 33.334) + 1.0).floor() as i32,
     };
 
     let location = chunk_lookup.get(&chunk_coords);
 
-    egui::SidePanel::left("Info panel").default_width(450.0).show(egui_context.ctx_mut(), |ui| {
-        egui::ScrollArea::vertical().show(ui, |ui| {
+    egui::SidePanel::left("Info panel")
+    .min_width(450.0)
+    .show(egui_context.ctx_mut(), |ui| {
         ui.label(format!("Position: {:?}", cam_pos));
-            ui.label(format!("Chunk coords: {:?}", &chunk_coords));
+        ui.label(format!("Chunk coords: {:?}", &chunk_coords));
 
         if let Some(location) = location {
             let (adt, chunk) = location;
             ui.label(format!("Chunk: ({}) ({}, {}) {:#?}", adt.filename, chunk.x, chunk.y, chunk.mcly.layers));
-                ui.label(format!("Textures: {:#?}", adt.mtex.as_ref().unwrap()));
+            ui.label(format!("Textures: {:#?}", adt.mtex.as_ref().unwrap()));
         }
-        });
     });
 }
