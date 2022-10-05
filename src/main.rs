@@ -287,17 +287,23 @@ fn ui_example(
 ) {
     let cam_pos: Vec3 = query.single().translation;
 
-    let location = chunk_lookup.get(&ChunkCoords {
-        x: (cam_pos.x / 33.334).floor() as i32,
+    let chunk_coords = ChunkCoords {
+        x: ((cam_pos.x / 33.334) + 1.0).floor() as i32,
         y: (cam_pos.z / 33.334).floor() as i32,
-    });
+    };
 
-    egui::Window::new("Info panel").show(egui_context.ctx_mut(), |ui| {
+    let location = chunk_lookup.get(&chunk_coords);
+
+    egui::SidePanel::left("Info panel").default_width(450.0).show(egui_context.ctx_mut(), |ui| {
+        egui::ScrollArea::vertical().show(ui, |ui| {
         ui.label(format!("Position: {:?}", cam_pos));
+            ui.label(format!("Chunk coords: {:?}", &chunk_coords));
 
         if let Some(location) = location {
             let (adt, chunk) = location;
             ui.label(format!("Chunk: ({}) ({}, {}) {:#?}", adt.filename, chunk.x, chunk.y, chunk.mcly.layers));
+                ui.label(format!("Textures: {:#?}", adt.mtex.as_ref().unwrap()));
         }
+        });
     });
 }
