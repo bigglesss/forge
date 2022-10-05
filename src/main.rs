@@ -272,24 +272,12 @@ fn setup(
 
     commands.insert_resource(chunk_lookup);
 
-    commands.spawn_bundle(DirectionalLightBundle {
-        directional_light: DirectionalLight {
-            illuminance: 10000.0,
-            shadows_enabled: true,
-            ..default()
-        },
-        transform: Transform {
-            translation: Vec3::new(-14188.0, 186.0, 185.0),
-            rotation: Quat::from_array([-0.20046994, 0.44985244, 0.10437336, 0.86403173]),
-            ..default()
-        },
-        ..default()
-    });
-
     commands.spawn_bundle(Camera3dBundle {
-        transform: Transform::from_xyz(-14246.663, 93.41158, 229.796333).looking_at(Vec3::ZERO, Vec3::Y),
+        transform: Transform::from_xyz(adts[0].mcnk[0].position.x, adts[0].mcnk[0].position.y, adts[0].mcnk[0].position.z).looking_at(Vec3::ZERO, Vec3::Y),
         ..default()
     }).insert(FlyCam);
+
+    println!("{:?}", (adts[0].mcnk[0].position.x, adts[0].mcnk[0].position.y, adts[0].mcnk[0].position.z));
 }
 
 fn ui_example(
