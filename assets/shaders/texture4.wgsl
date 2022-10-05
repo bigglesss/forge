@@ -41,6 +41,14 @@ var alpha_4: texture_2d<f32>;
 @group(1) @binding(14)
 var alpha_4_sampler: sampler;
 
+fn saturation(color: vec4<f32>, adjustment: f32) -> vec4<f32>
+{
+    // Algorithm from Chapter 16 of OpenGL Shading Language
+    let W: vec4<f32> = vec4(0.2125, 0.7154, 0.0721, 1.0);
+    let intensity: vec4<f32> = vec4(dot(color, W));
+    return mix(intensity, color, adjustment);
+}
+
 @fragment
 fn fragment(
     #import bevy_pbr::mesh_vertex_output
@@ -67,5 +75,5 @@ fn fragment(
     // finalColor = tex0 * (1.0 - (alpha1 + alpha2 + alpha3)) + tex1 * alpha1 + tex2 * alpha2 + tex3 * alpha3
     var final_color: vec4<f32> = layer_1_color * (1.0 - (alpha_2_value + alpha_3_value + alpha_4_value)) + (layer_2_color * alpha_2_value) + (layer_3_color * alpha_3_value) + (layer_4_color * alpha_4_value);
 
-    return (final_color * world_normal.y);
+    return saturation(final_color * (world_normal.y / 2.0), 1.25);
 }

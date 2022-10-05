@@ -92,6 +92,8 @@ fn process_blp(
 
     let path = if specular_path.exists() {specular_path} else {normal_path};
 
+    // TODO: Specular textures are being loaded, but probably not being used properly.
+    // In-game textures look noticably less flat, even with constrast turned up. Look into improving the lighting quality or handling speculars properly?
     let blp = parser::parse_blp(&path)
         .expect(format!("BLPs should be valid: {:?}", &path).as_str());
 
