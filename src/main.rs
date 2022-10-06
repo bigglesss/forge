@@ -1,23 +1,30 @@
 use std::path::PathBuf;
 
-use bevy::{prelude::*, render::render_resource::{Extent3d, TextureDimension, TextureFormat}, utils::hashbrown::HashMap};
+use bevy::{
+    prelude::*,
+    render::{render_resource::{Extent3d, TextureDimension, TextureFormat}, settings::WgpuSettings},
+    utils::hashbrown::HashMap, pbr::wireframe::{WireframePlugin, WireframeConfig}
+};
 use bevy_egui::{egui, EguiContext, EguiPlugin};
 
 use bevy::render::mesh::{self, PrimitiveTopology};
 use bevy::render::{render_resource::SamplerDescriptor, texture::ImageSampler};
 use bevy::window::PresentMode;
 
-use bevy_flycam::{NoCameraPlayerPlugin, FlyCam, MovementSettings};
+use bevy_flycam::{FlyCam, MovementSettings, NoCameraPlayerPlugin};
 
 use materials::{CustomMaterial, WaterMaterial};
-use wgpu_types::{AddressMode, FilterMode};
+use wgpu_types::{AddressMode, FilterMode, Features};
 
-use wow_chunky::{parser::{self, adt::ADT}, types::{chunks::MCNK, shared::C3Vector}};
 use wow_chunky::types::chunks;
+use wow_chunky::{
+    parser::{self, adt::ADT},
+    types::{chunks::MCNK, shared::C3Vector},
+};
 
 mod materials;
 
-fn load_adts(origin: (usize, usize), range: usize) -> Vec<parser::adt::ADT> {
+fn load_adts(origin: (isize, isize), range: isize) -> Vec<parser::adt::ADT> {
     let wdt = parser::wdt::WDT::from_file(PathBuf::from("./test_data/Azeroth/Azeroth.wdt"))
         .expect("WDT should parse correctly.");
     // TODO: Split into startup systems for ADT loading, BLP loading, etc.
@@ -25,8 +32,8 @@ fn load_adts(origin: (usize, usize), range: usize) -> Vec<parser::adt::ADT> {
     // Should probably load a WDT instead and pick the four centre chunks to render.
     // Maybe use a smaller WDT to test.
     let mut adts: Vec<parser::adt::ADT> = Vec::new();
-    for x in 0..range {
-        for y in 0..range {
+    for x in -range..range {
+        for y in -range..range {
             let adt_x = (origin.0 + x) as u32;
             let adt_y = (origin.1 + y) as u32;
             let adt = parser::adt::ADT::from_wdt(&wdt, adt_x, adt_y)
@@ -39,66 +46,74 @@ fn load_adts(origin: (usize, usize), range: usize) -> Vec<parser::adt::ADT> {
 }
 
 fn main() {
-
     App::new()
         .insert_resource(WindowDescriptor {
             present_mode: PresentMode::Immediate,
             ..default()
         })
+        .insert_resource(WgpuSettings {
+            features: Features::POLYGON_MODE_LINE,
+            ..default()
+        })
         .insert_resource(Msaa { samples: 4 })
-        .insert_resource(load_adts((30, 30), 4))
+        .insert_resource(load_adts((32, 40), 1))
         .insert_resource(HashMap::<(String, usize), Handle<Image>>::new())
         .add_plugins(DefaultPlugins)
         .add_plugin(MaterialPlugin::<CustomMaterial>::default())
         .add_plugin(MaterialPlugin::<WaterMaterial>::default())
         .add_plugin(NoCameraPlayerPlugin)
         .add_plugin(EguiPlugin)
+        .add_plugin(WireframePlugin)
         .insert_resource(MovementSettings {
             sensitivity: 0.00010,
             speed: 30.0,
         })
         .add_startup_system(render_terrain)
         .add_startup_system(setup)
-        .add_system(ui_example)
+        .add_system(input)
+        .add_system(ui)
         .run();
 }
 
-fn generate_image_from_buffer(
-    width: u32,
-    height: u32,
-    data: &Vec<u8>,
-) -> Image {
+fn generate_image_from_buffer(width: u32, height: u32, data: &Vec<u8>) -> Image {
     let mut tex = Image::new(
-        Extent3d {width, height, ..default()}, 
-        TextureDimension::D2, data.clone(), 
-        TextureFormat::Rgba8Unorm
+        Extent3d {
+            width,
+            height,
+            ..default()
+        },
+        TextureDimension::D2,
+        data.clone(),
+        TextureFormat::Rgba8Unorm,
     );
 
     // Wrap u and v values, to allow for easier tiling.
-    tex.sampler_descriptor = ImageSampler::Descriptor(
-        SamplerDescriptor {
-            mag_filter: FilterMode::Linear,
-            min_filter: FilterMode::Linear,
-            address_mode_u: AddressMode::Repeat,
-            address_mode_v: AddressMode::Repeat,
-            ..default()
-        }
-    );
+    tex.sampler_descriptor = ImageSampler::Descriptor(SamplerDescriptor {
+        mag_filter: FilterMode::Linear,
+        min_filter: FilterMode::Linear,
+        address_mode_u: AddressMode::Repeat,
+        address_mode_v: AddressMode::Repeat,
+        ..default()
+    });
 
     tex
 }
 
-fn process_blp(
-    raw_filename: &String,
-    textures: &mut ResMut<Assets<Image>>,
-) -> Handle<Image> {
-    let specular_filename = format!("./test_data/{}_s.blp", raw_filename.replace("\\", "/").replace(".blp", ""));
+fn process_blp(raw_filename: &String, textures: &mut ResMut<Assets<Image>>) -> Handle<Image> {
+    let specular_filename = format!(
+        "./test_data/{}_s.blp",
+        raw_filename.replace("\\", "/").replace(".blp", "")
+    );
     let normal_filename = format!("./test_data/{}", raw_filename.replace("\\", "/"));
 
     let specular_path = PathBuf::from(&specular_filename);
     let normal_path = PathBuf::from(&normal_filename);
 
-    let path = if specular_path.exists() {specular_path} else {normal_path};
+    let path = if specular_path.exists() {
+        specular_path
+    } else {
+        normal_path
+    };
 
     // TODO: Specular textures are being loaded, but probably not being used properly.
     // In-game textures look noticably less flat, even with constrast turned up. Look into improving the lighting quality or handling speculars properly?
@@ -111,27 +126,27 @@ fn process_blp(
     texture_handle
 }
 
-fn process_alpha_map(
-    data: &Vec<u8>,
-    textures: &mut ResMut<Assets<Image>>,
-) -> Handle<Image> {
+fn process_alpha_map(data: &Vec<u8>, textures: &mut ResMut<Assets<Image>>) -> Handle<Image> {
     // Multiply alphas by 17 to readjust the range from 0-15 to 0-255.
     let data: Vec<u8> = data.into_iter().map(|v| v * 17).collect();
 
     let mut tex = Image::new(
-        Extent3d {width: 64, height: 64, ..default()}, 
-        TextureDimension::D2, data, 
+        Extent3d {
+            width: 64,
+            height: 64,
+            ..default()
+        },
+        TextureDimension::D2,
+        data,
         TextureFormat::R8Unorm,
     );
 
     // Wrap u and v values, to allow for easier tiling.
-    tex.sampler_descriptor = ImageSampler::Descriptor(
-        SamplerDescriptor {
-            mag_filter: FilterMode::Linear,
-            min_filter: FilterMode::Linear,
-            ..default()
-        }
-    );
+    tex.sampler_descriptor = ImageSampler::Descriptor(SamplerDescriptor {
+        mag_filter: FilterMode::Linear,
+        min_filter: FilterMode::Linear,
+        ..default()
+    });
 
     let texture_handle = textures.add(tex);
 
@@ -161,14 +176,16 @@ fn render_terrain(
             let mut layers: Vec<Option<Handle<Image>>> = vec![None, None, None, None];
             // The first layer never uses alpha.
             let mut alphas: Vec<Option<Handle<Image>>> = vec![
-                Some(process_alpha_map(&vec![0 as u8; 64*64], &mut textures)),
-                Some(process_alpha_map(&vec![0 as u8; 64*64], &mut textures)),
-                Some(process_alpha_map(&vec![0 as u8; 64*64], &mut textures)),
+                Some(process_alpha_map(&vec![0 as u8; 64 * 64], &mut textures)),
+                Some(process_alpha_map(&vec![0 as u8; 64 * 64], &mut textures)),
+                Some(process_alpha_map(&vec![0 as u8; 64 * 64], &mut textures)),
             ];
 
             for (i, texture_layer) in chunk.mcly.layers.iter().enumerate() {
                 let texture_id = texture_layer.texture_id as usize;
-                layers[i] = blp_lookup.get(&(adt.filename.clone(), texture_id)).and_then(|t| Some(t.clone()));
+                layers[i] = blp_lookup
+                    .get(&(adt.filename.clone(), texture_id))
+                    .and_then(|t| Some(t.clone()));
             }
 
             for (i, alpha_layer) in chunk.mcal.layers.iter().enumerate() {
@@ -176,7 +193,15 @@ fn render_terrain(
                 alphas[i] = Some(alpha_map);
             }
 
-            create_chunk_heightmesh(&mut commands, &mut meshes, &mut materials, &mut water_materials, layers, alphas, chunk);
+            create_chunk_heightmesh(
+                &mut commands,
+                &mut meshes,
+                &mut materials,
+                &mut water_materials,
+                layers,
+                alphas,
+                chunk,
+            );
         }
     }
 }
@@ -220,30 +245,16 @@ fn create_chunk_heightmesh(
     let mut uvs = Vec::new();
     for (i, position) in chunk.mcvt.heights.iter().enumerate() {
         let position = [position.x, position.z, position.y];
-        let normal = [chunk.mcnr.normals[i].x as f32, chunk.mcnr.normals[i].z as f32, chunk.mcnr.normals[i].y as f32];
+        let normal = [
+            chunk.mcnr.normals[i].x as f32,
+            chunk.mcnr.normals[i].z as f32,
+            chunk.mcnr.normals[i].y as f32,
+        ];
 
         positions.push(position);
         normals.push(normal);
         uvs.push([position[0], position[2]])
     }
-
-    let temp_positions = positions.clone();
-
-    let min_position = temp_positions.iter().reduce(|acc, p| {
-        if acc[0] < p[0] || acc[2] < p[2] {
-            p
-        } else {
-            acc
-        }
-    }).unwrap();
-
-    let max_position = temp_positions.iter().reduce(|acc, p| {
-        if acc[0] > p[0] || acc[2] > p[2] {
-            p
-        } else {
-            acc
-        }
-    }).unwrap();
 
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList);
     mesh.set_indices(Some(indices));
@@ -270,9 +281,13 @@ fn create_chunk_heightmesh(
     if chunk.flags.lq_magma || chunk.flags.lq_ocean || chunk.flags.lq_river {
         let height_range = &chunk.mclq.height;
         commands.spawn_bundle(MaterialMeshBundle {
-            mesh: meshes.add(Mesh::from(shape::Plane { size: 33.333 })),
+            mesh: meshes.add(Mesh::from(shape::Plane { size: CHUNK_SIZE })),
             material: water_materials.add(WaterMaterial {}),
-            transform: Transform::from_xyz(chunk.position.x + (33.333 / 2.0), height_range.max, chunk.position.y + (33.333 / 2.0)),
+            transform: Transform::from_xyz(
+                chunk.position.x + (CHUNK_SIZE / 2.0),
+                height_range.max,
+                chunk.position.y + (CHUNK_SIZE / 2.0),
+            ),
             ..default()
         });
     }
@@ -284,28 +299,45 @@ struct ChunkCoords {
     y: i32,
 }
 
-static CHUNK_SIZE: f32 = 33.333496;
+static CHUNK_SIZE: f32 = 33.334;
 
 impl ChunkCoords {
     fn from_wow_pos(position: C3Vector) -> Self {
-        let x = if position.x >= 0.0 {(((position.x / CHUNK_SIZE).floor()) * CHUNK_SIZE) as i32} else {(((position.x / CHUNK_SIZE).ceil()) * CHUNK_SIZE) as i32};
-        let y = if position.y >= 0.0 {(((position.y / CHUNK_SIZE).floor()) * CHUNK_SIZE) as i32} else {(((position.y / CHUNK_SIZE).ceil()) * CHUNK_SIZE) as i32};
+        let x = if position.x >= 0.0 {
+            (((position.x / CHUNK_SIZE).floor()) * CHUNK_SIZE) as i32
+        } else {
+            (((position.x / CHUNK_SIZE).ceil()) * CHUNK_SIZE) as i32
+        };
+        let y = if position.y >= 0.0 {
+            (((position.y / CHUNK_SIZE).floor()) * CHUNK_SIZE) as i32
+        } else {
+            (((position.y / CHUNK_SIZE).ceil()) * CHUNK_SIZE) as i32
+        };
 
         Self { x, y }
     }
 
     fn from_game_pos(position: Vec3) -> Self {
-        let x = if position.x >= 0.0 {(((position.x / CHUNK_SIZE).floor()) * CHUNK_SIZE) as i32} else {(((position.x / CHUNK_SIZE).ceil()) * CHUNK_SIZE) as i32};
-        let y = if position.z >= 0.0 {(((position.z / CHUNK_SIZE).floor()) * CHUNK_SIZE) as i32} else {(((position.z / CHUNK_SIZE).ceil()) * CHUNK_SIZE) as i32};
+        let x = if position.x >= 0.0 {
+            (((position.x / CHUNK_SIZE).floor()) * CHUNK_SIZE) as i32
+        } else {
+            (((position.x / CHUNK_SIZE).ceil()) * CHUNK_SIZE) as i32
+        };
+        let y = if position.z >= 0.0 {
+            (((position.z / CHUNK_SIZE).floor()) * CHUNK_SIZE) as i32
+        } else {
+            (((position.z / CHUNK_SIZE).ceil()) * CHUNK_SIZE) as i32
+        };
 
         Self { x, y }
     }
 }
 
+
 fn setup(
     mut commands: Commands,
     adts: Res<Vec<ADT>>,
-    ) {
+) {
     let mut chunk_lookup: HashMap<ChunkCoords, (ADT, MCNK)> = HashMap::new();
     for adt in adts.iter() {
         for chunk in adt.mcnk.iter() {
@@ -316,15 +348,33 @@ fn setup(
 
     commands.insert_resource(chunk_lookup);
 
-    let initial_position = Vec3::new(adts[0].mcnk[0].position.x, adts[0].mcnk[0].position.z, adts[0].mcnk[0].position.y);
+    let center_adt = &adts[adts.len() / 2];
+    let center_chunk = &center_adt.mcnk[center_adt.mcnk.len() / 2];
+    let initial_position = Vec3::new(
+        center_chunk.position.x,
+        center_chunk.position.z,
+        center_chunk.position.y,
+    );
 
-    commands.spawn_bundle(Camera3dBundle {
-        transform: Transform::from_translation(initial_position).looking_at(Vec3::ZERO, Vec3::Y),
-        ..default()
-    }).insert(FlyCam);
+    commands
+        .spawn_bundle(Camera3dBundle {
+            transform: Transform::from_translation(initial_position)
+                .looking_at(Vec3::ZERO, Vec3::Y),
+            ..default()
+        })
+        .insert(FlyCam);
 }
 
-fn ui_example(
+fn input(
+    keys: Res<Input<KeyCode>>,
+    mut wireframe_config: ResMut<WireframeConfig>,
+) {
+    if keys.any_just_pressed([KeyCode::Equals]) {
+        wireframe_config.global = !wireframe_config.global;
+    }
+}
+
+fn ui(
     mut egui_context: ResMut<EguiContext>,
     query: Query<&mut Transform, With<FlyCam>>,
     chunk_lookup: Res<HashMap<ChunkCoords, (parser::adt::ADT, chunks::MCNK)>>,
@@ -334,19 +384,22 @@ fn ui_example(
     let location = chunk_lookup.get(&coords);
 
     egui::SidePanel::left("Info panel")
-    .min_width(450.0)
-    .show(egui_context.ctx_mut(), |ui| {
-        egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            ui.label(format!("Position: {:?}", cam_pos));
+        .min_width(450.0)
+        .show(egui_context.ctx_mut(), |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.label(format!("Position: {:?}", cam_pos));
 
-            if let Some(location) = location {
-                let (adt, chunk) = location;
-                ui.label(format!("Chunk: ({}) ({}, {}) {:#?}", adt.filename, chunk.x, chunk.y, chunk.mcly.layers));
-                ui.label(format!("Textures: {:#?}", adt.mtex.as_ref().unwrap()));
-                // ui.label(format!("Water: {:#?}", chunk.mclq));
-            }
+                    if let Some(location) = location {
+                        let (adt, chunk) = location;
+                        ui.label(format!(
+                            "Chunk: ({}) ({}, {}) {:#?}",
+                            adt.filename, chunk.x, chunk.y, chunk.mcly.layers
+                        ));
+                        // ui.label(format!("Textures: {:#?}", adt.mtex.as_ref().unwrap()));
+                        ui.label(format!("Water: {:#?}", chunk.mclq));
+                    }
+                });
         });
-    });
 }
