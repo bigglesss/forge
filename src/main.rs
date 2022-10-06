@@ -284,7 +284,7 @@ struct ChunkCoords {
     y: i32,
 }
 
-static CHUNK_SIZE: f32 = 33.334;
+static CHUNK_SIZE: f32 = 33.333496;
 
 impl ChunkCoords {
     fn from_wow_pos(position: C3Vector) -> Self {
