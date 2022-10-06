@@ -9,29 +9,36 @@ use bevy::window::PresentMode;
 
 use bevy_flycam::{NoCameraPlayerPlugin, FlyCam, MovementSettings};
 
-use materials::CustomMaterial;
+use materials::{CustomMaterial, WaterMaterial};
 use wgpu_types::{AddressMode, FilterMode};
 
-use wow_chunky::parser;
+use wow_chunky::{parser::{self, adt::ADT}, types::{chunks::MCNK, shared::C3Vector}};
 use wow_chunky::types::chunks;
 
 mod materials;
 
-fn main() {
+fn load_adts(origin: (usize, usize), range: usize) -> Vec<parser::adt::ADT> {
     let wdt = parser::wdt::WDT::from_file(PathBuf::from("./test_data/Azeroth/Azeroth.wdt"))
         .expect("WDT should parse correctly.");
     // TODO: Split into startup systems for ADT loading, BLP loading, etc.
     // Store in some kind of HashMap resource of X/Y -> ADT?
     // Should probably load a WDT instead and pick the four centre chunks to render.
     // Maybe use a smaller WDT to test.
-    let adt = parser::adt::ADT::from_wdt(&wdt, 31, 40)
-        .expect("ADT should parse correctly.");
-    let adt2 = parser::adt::ADT::from_wdt(&wdt, 32, 40)
-        .expect("ADT should parse correctly.");
-    let adt3 = parser::adt::ADT::from_wdt(&wdt, 31, 41)
-        .expect("ADT should parse correctly.");
-    let adt4 = parser::adt::ADT::from_wdt(&wdt, 32, 41)
-        .expect("ADT should parse correctly.");
+    let mut adts: Vec<parser::adt::ADT> = Vec::new();
+    for x in 0..range {
+        for y in 0..range {
+            let adt_x = (origin.0 + x) as u32;
+            let adt_y = (origin.1 + y) as u32;
+            let adt = parser::adt::ADT::from_wdt(&wdt, adt_x, adt_y)
+                .expect(format!("ADT {} {} should parse correctly.", adt_x, adt_y).as_str());
+            adts.push(adt);
+        }
+    }
+
+    adts
+}
+
+fn main() {
 
     App::new()
         .insert_resource(WindowDescriptor {
@@ -39,10 +46,11 @@ fn main() {
             ..default()
         })
         .insert_resource(Msaa { samples: 4 })
-        .insert_resource(vec![adt, adt2, adt3, adt4])
+        .insert_resource(load_adts((30, 30), 4))
         .insert_resource(HashMap::<(String, usize), Handle<Image>>::new())
         .add_plugins(DefaultPlugins)
         .add_plugin(MaterialPlugin::<CustomMaterial>::default())
+        .add_plugin(MaterialPlugin::<WaterMaterial>::default())
         .add_plugin(NoCameraPlayerPlugin)
         .add_plugin(EguiPlugin)
         .insert_resource(MovementSettings {
@@ -94,7 +102,7 @@ fn process_blp(
 
     // TODO: Specular textures are being loaded, but probably not being used properly.
     // In-game textures look noticably less flat, even with constrast turned up. Look into improving the lighting quality or handling speculars properly?
-    let blp = parser::parse_blp(&path)
+    let blp = parser::parse_blp(path.clone())
         .expect(format!("BLPs should be valid: {:?}", &path).as_str());
 
     let texture = generate_image_from_buffer(blp.width, blp.height, &blp.mipmaps[0].decompressed);
@@ -134,6 +142,7 @@ fn render_terrain(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<CustomMaterial>>,
+    mut water_materials: ResMut<Assets<WaterMaterial>>,
     mut textures: ResMut<Assets<Image>>,
     adts: Res<Vec<parser::adt::ADT>>,
     mut blp_lookup: ResMut<HashMap<(String, usize), Handle<Image>>>,
@@ -167,7 +176,7 @@ fn render_terrain(
                 alphas[i] = Some(alpha_map);
             }
 
-            create_chunk_heightmesh(&mut commands, &mut meshes, &mut materials, layers, alphas, chunk);
+            create_chunk_heightmesh(&mut commands, &mut meshes, &mut materials, &mut water_materials, layers, alphas, chunk);
         }
     }
 }
@@ -176,6 +185,7 @@ fn create_chunk_heightmesh(
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<CustomMaterial>>,
+    water_materials: &mut ResMut<Assets<WaterMaterial>>,
     layers: Vec<Option<Handle<Image>>>,
     alphas: Vec<Option<Handle<Image>>>,
     chunk: &chunks::MCNK,
@@ -243,9 +253,8 @@ fn create_chunk_heightmesh(
 
     commands.spawn_bundle(MaterialMeshBundle {
         mesh: meshes.add(mesh),
-        // material: materials.add(Color::rgb(0.2, 0.2, 0.2).into()),
         material: materials.add(CustomMaterial {
-            base_positions: Vec4::new(chunk.position.x, chunk.position.y, max_position[0] - min_position[0], max_position[2] - min_position[2]),
+            base_positions: Vec2::new(chunk.position.x, chunk.position.y),
             layer_1: layers[0].clone(),
             layer_2: layers[1].clone(),
             alpha_2: alphas[0].clone(),
@@ -256,6 +265,17 @@ fn create_chunk_heightmesh(
         }),
         ..default()
     });
+
+    // Render water if it exists in the chunk.
+    if chunk.flags.lq_magma || chunk.flags.lq_ocean || chunk.flags.lq_river {
+        let height_range = &chunk.mclq.height;
+        commands.spawn_bundle(MaterialMeshBundle {
+            mesh: meshes.add(Mesh::from(shape::Plane { size: 33.333 })),
+            material: water_materials.add(WaterMaterial {}),
+            transform: Transform::from_xyz(chunk.position.x + (33.333 / 2.0), height_range.max, chunk.position.y + (33.333 / 2.0)),
+            ..default()
+        });
+    }
 }
 
 #[derive(Debug, Eq, Hash, PartialEq)]
@@ -264,31 +284,44 @@ struct ChunkCoords {
     y: i32,
 }
 
+static CHUNK_SIZE: f32 = 33.334;
+
+impl ChunkCoords {
+    fn from_wow_pos(position: C3Vector) -> Self {
+        let x = if position.x >= 0.0 {(((position.x / CHUNK_SIZE).floor()) * CHUNK_SIZE) as i32} else {(((position.x / CHUNK_SIZE).ceil()) * CHUNK_SIZE) as i32};
+        let y = if position.y >= 0.0 {(((position.y / CHUNK_SIZE).floor()) * CHUNK_SIZE) as i32} else {(((position.y / CHUNK_SIZE).ceil()) * CHUNK_SIZE) as i32};
+
+        Self { x, y }
+    }
+
+    fn from_game_pos(position: Vec3) -> Self {
+        let x = if position.x >= 0.0 {(((position.x / CHUNK_SIZE).floor()) * CHUNK_SIZE) as i32} else {(((position.x / CHUNK_SIZE).ceil()) * CHUNK_SIZE) as i32};
+        let y = if position.z >= 0.0 {(((position.z / CHUNK_SIZE).floor()) * CHUNK_SIZE) as i32} else {(((position.z / CHUNK_SIZE).ceil()) * CHUNK_SIZE) as i32};
+
+        Self { x, y }
+    }
+}
+
 fn setup(
     mut commands: Commands,
-    adts: Res<Vec<parser::adt::ADT>>,
+    adts: Res<Vec<ADT>>,
     ) {
-    let mut chunk_lookup: HashMap<ChunkCoords, (parser::adt::ADT, chunks::MCNK)> = HashMap::new();
+    let mut chunk_lookup: HashMap<ChunkCoords, (ADT, MCNK)> = HashMap::new();
     for adt in adts.iter() {
         for chunk in adt.mcnk.iter() {
-            let c = ChunkCoords {
-                x: (chunk.position.x / 33.334).floor() as i32,
-                y: (chunk.position.y / 33.334).floor() as i32,
-            };
-            chunk_lookup.insert(c, (adt.clone(), chunk.clone()));
+            let coords = ChunkCoords::from_wow_pos(chunk.position);
+            chunk_lookup.insert(coords, (adt.clone(), chunk.clone()));
         }
     }
 
     commands.insert_resource(chunk_lookup);
 
-    let _initial_position = Vec3::new(adts[0].mcnk[0].position.x, adts[0].mcnk[0].position.y, adts[0].mcnk[0].position.z);
+    let initial_position = Vec3::new(adts[0].mcnk[0].position.x, adts[0].mcnk[0].position.z, adts[0].mcnk[0].position.y);
 
     commands.spawn_bundle(Camera3dBundle {
-        transform: Transform::from_xyz(-4337.3545, 13.121, -143.148).looking_at(Vec3::ZERO, Vec3::Y),
+        transform: Transform::from_translation(initial_position).looking_at(Vec3::ZERO, Vec3::Y),
         ..default()
     }).insert(FlyCam);
-
-    println!("{:?}", (adts[0].mcnk[0].position.x, adts[0].mcnk[0].position.y, adts[0].mcnk[0].position.z));
 }
 
 fn ui_example(
@@ -297,24 +330,23 @@ fn ui_example(
     chunk_lookup: Res<HashMap<ChunkCoords, (parser::adt::ADT, chunks::MCNK)>>,
 ) {
     let cam_pos: Vec3 = query.single().translation;
-
-    let chunk_coords = ChunkCoords {
-        x: ((cam_pos.x / 33.334) + 1.0).floor() as i32,
-        y: ((cam_pos.z / 33.334) + 1.0).floor() as i32,
-    };
-
-    let location = chunk_lookup.get(&chunk_coords);
+    let coords = ChunkCoords::from_game_pos(cam_pos);
+    let location = chunk_lookup.get(&coords);
 
     egui::SidePanel::left("Info panel")
     .min_width(450.0)
     .show(egui_context.ctx_mut(), |ui| {
-        ui.label(format!("Position: {:?}", cam_pos));
-        ui.label(format!("Chunk coords: {:?}", &chunk_coords));
+        egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.label(format!("Position: {:?}", cam_pos));
 
-        if let Some(location) = location {
-            let (adt, chunk) = location;
-            ui.label(format!("Chunk: ({}) ({}, {}) {:#?}", adt.filename, chunk.x, chunk.y, chunk.mcly.layers));
-            ui.label(format!("Textures: {:#?}", adt.mtex.as_ref().unwrap()));
-        }
+            if let Some(location) = location {
+                let (adt, chunk) = location;
+                ui.label(format!("Chunk: ({}) ({}, {}) {:#?}", adt.filename, chunk.x, chunk.y, chunk.mcly.layers));
+                ui.label(format!("Textures: {:#?}", adt.mtex.as_ref().unwrap()));
+                // ui.label(format!("Water: {:#?}", chunk.mclq));
+            }
+        });
     });
 }

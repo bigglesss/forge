@@ -1,5 +1,5 @@
 struct CustomMaterial {
-    base_positions: vec4<f32>,
+    base_positions: vec2<f32>,
 };
 
 @group(1) @binding(0)
@@ -53,13 +53,10 @@ fn saturation(color: vec4<f32>, adjustment: f32) -> vec4<f32>
 fn fragment(
     #import bevy_pbr::mesh_vertex_output
 ) -> @location(0) vec4<f32> {
-    let distance = uv - material.base_positions.xy;
+    let distance_from_origin = uv - material.base_positions.xy;
 
     // For some reason x + y are flipped here, perhaps I made a mistake somewhere.
-    let x_n = (distance.y / material.base_positions.z);
-    let y_n = (distance.x / material.base_positions.w);
-
-    let uv_alpha = vec2<f32>(x_n, y_n);
+    let uv_alpha = vec2<f32>(abs(distance_from_origin.y) / 33.333496, abs(distance_from_origin.x) / 33.333496);
 
     var layer_1_color: vec4<f32> = textureSample(layer_1, layer_1_sampler, uv);
 
@@ -74,6 +71,8 @@ fn fragment(
 
     // finalColor = tex0 * (1.0 - (alpha1 + alpha2 + alpha3)) + tex1 * alpha1 + tex2 * alpha2 + tex3 * alpha3
     var final_color: vec4<f32> = layer_1_color * (1.0 - (alpha_2_value + alpha_3_value + alpha_4_value)) + (layer_2_color * alpha_2_value) + (layer_3_color * alpha_3_value) + (layer_4_color * alpha_4_value);
+
+    // return layer_1_color * (1.0 - (alpha_2_value + alpha_3_value + alpha_4_value)) + (layer_2_color * alpha_2_value);
 
     return saturation(final_color * (world_normal.y / 2.0), 1.25);
 }

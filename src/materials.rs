@@ -1,10 +1,10 @@
-use bevy::{render::render_resource::{AsBindGroup, ShaderRef}, reflect::TypeUuid, prelude::{Handle, Image, Material, Vec4}};
+use bevy::{render::render_resource::{AsBindGroup, ShaderRef}, reflect::TypeUuid, prelude::{Handle, Image, Material, Vec2}};
 
 #[derive(AsBindGroup, TypeUuid, Debug, Default, Clone)]
 #[uuid = "f5ec49f1-1a2e-4c3e-9f6f-836e54b1a576"]
 pub struct CustomMaterial {
     #[uniform(0)]
-    pub base_positions: Vec4,
+    pub base_positions: Vec2,
 
     #[texture(1)]
     #[sampler(2)]
@@ -35,5 +35,20 @@ pub struct CustomMaterial {
 impl Material for CustomMaterial {
     fn fragment_shader() -> ShaderRef {
         "shaders/texture4.wgsl".into()
+    }
+}
+
+#[derive(AsBindGroup, TypeUuid, Debug, Default, Clone)]
+#[uuid = "af4a9d14-d090-4adb-9f11-adb40dd93ee9"]
+pub struct WaterMaterial {
+}
+
+impl Material for WaterMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/water.wgsl".into()
+    }
+
+    fn alpha_mode(&self) -> bevy::prelude::AlphaMode {
+        bevy::prelude::AlphaMode::Blend
     }
 }
