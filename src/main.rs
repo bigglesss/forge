@@ -5,7 +5,7 @@ use bevy::{
     render::{render_resource::{Extent3d, TextureDimension, TextureFormat}, settings::WgpuSettings},
     utils::hashbrown::HashMap, pbr::wireframe::{WireframePlugin, WireframeConfig}, tasks::{AsyncComputeTaskPool, Task}
 };
-use bevy_egui::{egui, EguiContext, EguiPlugin};
+use bevy_egui::{egui::{self, Color32}, EguiContext, EguiPlugin};
 
 use bevy::render::mesh::{self, PrimitiveTopology};
 use bevy::render::{render_resource::SamplerDescriptor, texture::ImageSampler};
@@ -58,7 +58,8 @@ fn main() {
 
         .insert_resource(HashMap::<(String, usize), Handle<Image>>::new())
         .insert_resource(HashMap::<(u32, u32), Vec<Entity>>::new())
-        .insert_resource(HashMap::<ChunkCoords, (parser::ADT, types::adt::MCNK)>::new())
+        // TODO: Should actually link to an adt key + chunk key, so the ui system can find the types from the stored adts (which should be a hashmap).
+        .insert_resource(HashMap::<ChunkCoords, (String, Option<types::adt::MTEX>, types::adt::MCNK)>::new())
 
         .insert_resource(Vec::<parser::ADT>::new())
 
@@ -70,13 +71,13 @@ fn main() {
         .add_plugin(WireframePlugin)
         .insert_resource(MovementSettings {
             sensitivity: 0.00010,
-            speed: 30.0,
+            speed: 100.0,
         })
         .add_startup_system(setup)
         .add_system(chunk_queuer)
         .add_system(chunk_loader.after(chunk_queuer))
         .add_system(render_terrain.after(chunk_loader))
-        .add_system(chunk_coordinates.after(chunk_loader))
+        // .add_system(chunk_coordinates.after(chunk_loader))
         .add_system(input)
         .add_system(ui)
         .run();
@@ -363,7 +364,7 @@ fn setup(
 ) {
     commands
         .spawn_bundle(Camera3dBundle {
-            transform: Transform::from_xyz(ADT_SIZE * 5., 100., 0.)
+            transform: Transform::from_xyz(ADT_SIZE * 0., 100., 0.)
                 .looking_at(Vec3::ZERO, Vec3::Y),
             ..default()
         })
@@ -445,6 +446,7 @@ fn chunk_loader(
     for (entity, mut task) in &mut chunk_tasks {
         if let Some(task) = future::block_on(future::poll_once(&mut task.0)) {
             if let Some(adt) = task {
+                println!("Adding ADT to render list: {} {}", adt.x, adt.y);
                 adts.push(adt);
             }
 
@@ -455,13 +457,14 @@ fn chunk_loader(
 
 fn chunk_coordinates(
     adts: Res<Vec<parser::adt::ADT>>,
-    mut chunk_lookup: ResMut<HashMap<ChunkCoords, (parser::ADT, types::adt::MCNK)>>,
+    mut chunk_lookup: ResMut<HashMap<ChunkCoords, (String, Option<types::adt::MTEX>, types::adt::MCNK)>>,
 ) {
     for adt in adts.iter() {
+        let mtex = &adt.mtex;
         for chunk in adt.mcnk.iter() {
             let coords = ChunkCoords::from_wow_pos(chunk.position);
             if chunk_lookup.get(&coords).is_none() {
-                chunk_lookup.insert(coords, (adt.clone(), chunk.clone()));
+                chunk_lookup.insert(coords, (adt.filename.clone(), mtex.clone(), chunk.clone()));
             }
         }
     }
@@ -495,27 +498,29 @@ fn input(
 fn ui(
     mut egui_context: ResMut<EguiContext>,
     query: Query<&mut Transform, With<FlyCam>>,
-    chunk_lookup: Res<HashMap<ChunkCoords, (parser::adt::ADT, types::adt::MCNK)>>,
+    chunk_lookup: ResMut<HashMap<ChunkCoords, (String, Option<types::adt::MTEX>, types::adt::MCNK)>>,
+    chunk_tasks: Query<(Entity, &mut AdtParsingTask)>,
 ) {
     let cam_pos: Vec3 = query.single().translation;
     let coords = ChunkCoords::from_game_pos(cam_pos);
     let location = chunk_lookup.get(&coords);
 
-    egui::SidePanel::left("Info panel")
+    egui::Window::new("Chunk info")
         .min_width(450.0)
         .show(egui_context.ctx_mut(), |ui| {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
+                    ui.colored_label(Color32::LIGHT_YELLOW, format!("Loading {} chunks", chunk_tasks.iter().count()));
                     ui.label(format!("Position: {:?}", cam_pos));
 
                     if let Some(location) = location {
-                        let (adt, chunk) = location;
+                        let (adt, mtex, chunk) = location;
                         ui.label(format!(
                             "Chunk: ({}) ({}, {}) {:#?}",
-                            adt.filename, chunk.x, chunk.y, chunk.mcly.layers
+                            adt, chunk.x, chunk.y, chunk.mcly.layers
                         ));
-                        // ui.label(format!("Textures: {:#?}", adt.mtex.as_ref().unwrap()));
+                        ui.label(format!("Textures: {:#?}", mtex.as_ref().unwrap()));
                         ui.label(format!("Water: {:#?}", chunk.mclq));
                     }
                 });
