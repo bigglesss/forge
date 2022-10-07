@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use bevy::{
     prelude::*,
     render::{render_resource::{Extent3d, TextureDimension, TextureFormat}, settings::WgpuSettings},
-    utils::hashbrown::HashMap, pbr::wireframe::{WireframePlugin, WireframeConfig}
+    utils::hashbrown::HashMap, pbr::wireframe::{WireframePlugin, WireframeConfig}, tasks::{AsyncComputeTaskPool, Task}
 };
 use bevy_egui::{egui, EguiContext, EguiPlugin};
 
@@ -13,32 +13,26 @@ use bevy::window::PresentMode;
 
 use bevy_flycam::{FlyCam, MovementSettings, NoCameraPlayerPlugin};
 
+use futures_lite::future;
 use materials::{CustomMaterial, WaterMaterial};
 use wgpu_types::{AddressMode, FilterMode, Features};
 
-use wow_chunky::types::chunks;
-use wow_chunky::{
-    parser::{self, adt::ADT},
-    types::{chunks::MCNK, shared::C3Vector},
-};
+use wow_chunky::{types, parser};
+
 
 mod materials;
 
-fn load_adts(origin: (isize, isize), range: isize) -> Vec<parser::adt::ADT> {
-    let wdt = parser::wdt::WDT::from_file(PathBuf::from("./test_data/Azeroth/Azeroth.wdt"))
-        .expect("WDT should parse correctly.");
-    // TODO: Split into startup systems for ADT loading, BLP loading, etc.
-    // Store in some kind of HashMap resource of X/Y -> ADT?
-    // Should probably load a WDT instead and pick the four centre chunks to render.
-    // Maybe use a smaller WDT to test.
-    let mut adts: Vec<parser::adt::ADT> = Vec::new();
-    for x in -range..range {
-        for y in -range..range {
+fn get_adts_in_range(origin: (i32, i32), range: i32) -> Vec<(u32, u32)> {
+    if range == 0 {
+        return vec![(origin.0 as u32, origin.1 as u32)]
+    }
+
+    let mut adts: Vec<(u32, u32)> = Vec::new();
+    for x in -range..=range {
+        for y in -range..=range {
             let adt_x = (origin.0 + x) as u32;
             let adt_y = (origin.1 + y) as u32;
-            let adt = parser::adt::ADT::from_wdt(&wdt, adt_x, adt_y)
-                .expect(format!("ADT {} {} should parse correctly.", adt_x, adt_y).as_str());
-            adts.push(adt);
+            adts.push((adt_x, adt_y));
         }
     }
 
@@ -46,6 +40,9 @@ fn load_adts(origin: (isize, isize), range: isize) -> Vec<parser::adt::ADT> {
 }
 
 fn main() {
+    let wdt = parser::WDT::from_file(PathBuf::from("./test_data/Azeroth/Azeroth.wdt"))
+        .expect("WDT should parse correctly.");
+
     App::new()
         .insert_resource(WindowDescriptor {
             present_mode: PresentMode::Immediate,
@@ -56,8 +53,15 @@ fn main() {
             ..default()
         })
         .insert_resource(Msaa { samples: 4 })
-        .insert_resource(load_adts((32, 40), 1))
+
+        .insert_resource(wdt)
+
         .insert_resource(HashMap::<(String, usize), Handle<Image>>::new())
+        .insert_resource(HashMap::<(u32, u32), Vec<Entity>>::new())
+        .insert_resource(HashMap::<ChunkCoords, (parser::ADT, types::adt::MCNK)>::new())
+
+        .insert_resource(Vec::<parser::ADT>::new())
+
         .add_plugins(DefaultPlugins)
         .add_plugin(MaterialPlugin::<CustomMaterial>::default())
         .add_plugin(MaterialPlugin::<WaterMaterial>::default())
@@ -68,8 +72,11 @@ fn main() {
             sensitivity: 0.00010,
             speed: 30.0,
         })
-        .add_startup_system(render_terrain)
         .add_startup_system(setup)
+        .add_system(chunk_queuer)
+        .add_system(chunk_loader.after(chunk_queuer))
+        .add_system(render_terrain.after(chunk_loader))
+        .add_system(chunk_coordinates.after(chunk_loader))
         .add_system(input)
         .add_system(ui)
         .run();
@@ -161,8 +168,14 @@ fn render_terrain(
     mut textures: ResMut<Assets<Image>>,
     adts: Res<Vec<parser::adt::ADT>>,
     mut blp_lookup: ResMut<HashMap<(String, usize), Handle<Image>>>,
+    mut adt_entities_lookup: ResMut<HashMap<(u32, u32), Vec<Entity>>>,
 ) {
     for adt in adts.iter() {
+        // Skip ADTs we've already loaded.
+        if adt_entities_lookup.get(&(adt.x, adt.y)).is_some() {
+            continue;
+        }
+
         // Load all BLPs.
         if let Some(mtex) = &adt.mtex {
             for (i, filename) in mtex.filenames.iter().enumerate() {
@@ -171,6 +184,7 @@ fn render_terrain(
             }
         }
 
+        let mut adt_entities: Vec<Entity> = Vec::new();
         // Render chunks.
         for chunk in adt.mcnk.iter() {
             let mut layers: Vec<Option<Handle<Image>>> = vec![None, None, None, None];
@@ -193,7 +207,7 @@ fn render_terrain(
                 alphas[i] = Some(alpha_map);
             }
 
-            create_chunk_heightmesh(
+            let chunk_entities = create_chunk_heightmesh(
                 &mut commands,
                 &mut meshes,
                 &mut materials,
@@ -202,7 +216,10 @@ fn render_terrain(
                 alphas,
                 chunk,
             );
+            adt_entities.extend(chunk_entities);
         }
+
+        adt_entities_lookup.insert((adt.x, adt.y), adt_entities);
     }
 }
 
@@ -213,8 +230,8 @@ fn create_chunk_heightmesh(
     water_materials: &mut ResMut<Assets<WaterMaterial>>,
     layers: Vec<Option<Handle<Image>>>,
     alphas: Vec<Option<Handle<Image>>>,
-    chunk: &chunks::MCNK,
-) {
+    chunk: &types::adt::MCNK,
+) -> Vec<Entity> {
     let mut indices: Vec<u32> = Vec::new();
     for x in 0..8 {
         for y in 0..8 {
@@ -262,7 +279,9 @@ fn create_chunk_heightmesh(
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
 
-    commands.spawn_bundle(MaterialMeshBundle {
+    let mut chunk_entities: Vec<Entity> = Vec::new();
+
+    let heightmesh = commands.spawn_bundle(MaterialMeshBundle {
         mesh: meshes.add(mesh),
         material: materials.add(CustomMaterial {
             base_positions: Vec2::new(chunk.position.x, chunk.position.y),
@@ -276,11 +295,12 @@ fn create_chunk_heightmesh(
         }),
         ..default()
     });
+    chunk_entities.push(heightmesh.id());
 
     // Render water if it exists in the chunk.
     if chunk.flags.lq_magma || chunk.flags.lq_ocean || chunk.flags.lq_river {
         let height_range = &chunk.mclq.height;
-        commands.spawn_bundle(MaterialMeshBundle {
+        let watermesh = commands.spawn_bundle(MaterialMeshBundle {
             mesh: meshes.add(Mesh::from(shape::Plane { size: CHUNK_SIZE })),
             material: water_materials.add(WaterMaterial {}),
             transform: Transform::from_xyz(
@@ -290,7 +310,10 @@ fn create_chunk_heightmesh(
             ),
             ..default()
         });
+        chunk_entities.push(watermesh.id());
     }
+
+    chunk_entities
 }
 
 #[derive(Debug, Eq, Hash, PartialEq)]
@@ -299,19 +322,20 @@ struct ChunkCoords {
     y: i32,
 }
 
+static ADT_SIZE: f32 = 533.33333;
 static CHUNK_SIZE: f32 = 33.334;
 
 impl ChunkCoords {
-    fn from_wow_pos(position: C3Vector) -> Self {
+    fn from_wow_pos(position: types::shared::C3Vector) -> Self {
         let x = if position.x >= 0.0 {
-            (((position.x / CHUNK_SIZE).floor()) * CHUNK_SIZE) as i32
+            ((position.x / CHUNK_SIZE).floor()) as i32
         } else {
-            (((position.x / CHUNK_SIZE).ceil()) * CHUNK_SIZE) as i32
+            ((position.x / CHUNK_SIZE).ceil()) as i32
         };
         let y = if position.y >= 0.0 {
-            (((position.y / CHUNK_SIZE).floor()) * CHUNK_SIZE) as i32
+            ((position.y / CHUNK_SIZE).floor()) as i32
         } else {
-            (((position.y / CHUNK_SIZE).ceil()) * CHUNK_SIZE) as i32
+            ((position.y / CHUNK_SIZE).ceil()) as i32
         };
 
         Self { x, y }
@@ -319,14 +343,14 @@ impl ChunkCoords {
 
     fn from_game_pos(position: Vec3) -> Self {
         let x = if position.x >= 0.0 {
-            (((position.x / CHUNK_SIZE).floor()) * CHUNK_SIZE) as i32
+            ((position.x / CHUNK_SIZE).floor()) as i32
         } else {
-            (((position.x / CHUNK_SIZE).ceil()) * CHUNK_SIZE) as i32
+            ((position.x / CHUNK_SIZE).ceil()) as i32
         };
         let y = if position.z >= 0.0 {
-            (((position.z / CHUNK_SIZE).floor()) * CHUNK_SIZE) as i32
+            ((position.z / CHUNK_SIZE).floor()) as i32
         } else {
-            (((position.z / CHUNK_SIZE).ceil()) * CHUNK_SIZE) as i32
+            ((position.z / CHUNK_SIZE).ceil()) as i32
         };
 
         Self { x, y }
@@ -336,48 +360,142 @@ impl ChunkCoords {
 
 fn setup(
     mut commands: Commands,
-    adts: Res<Vec<ADT>>,
 ) {
-    let mut chunk_lookup: HashMap<ChunkCoords, (ADT, MCNK)> = HashMap::new();
-    for adt in adts.iter() {
-        for chunk in adt.mcnk.iter() {
-            let coords = ChunkCoords::from_wow_pos(chunk.position);
-            chunk_lookup.insert(coords, (adt.clone(), chunk.clone()));
-        }
-    }
-
-    commands.insert_resource(chunk_lookup);
-
-    let center_adt = &adts[adts.len() / 2];
-    let center_chunk = &center_adt.mcnk[center_adt.mcnk.len() / 2];
-    let initial_position = Vec3::new(
-        center_chunk.position.x,
-        center_chunk.position.z,
-        center_chunk.position.y,
-    );
-
     commands
         .spawn_bundle(Camera3dBundle {
-            transform: Transform::from_translation(initial_position)
+            transform: Transform::from_xyz(ADT_SIZE * 5., 100., 0.)
                 .looking_at(Vec3::ZERO, Vec3::Y),
             ..default()
         })
         .insert(FlyCam);
 }
 
+#[derive(Component)]
+struct AdtParsingTask(Task<Option<parser::ADT>>);
+
+
+/// Spawn chunk loading tasks as the camera moves around.
+fn chunk_queuer(
+    mut commands: Commands,
+    camera: Query<&mut Transform, With<FlyCam>>,
+    wdt: Res<parser::WDT>,
+    adts: Res<Vec<parser::ADT>>,
+    mut adt_entities_lookup: ResMut<HashMap<(u32, u32), Vec<Entity>>>,
+    chunk_tasks: Query<(Entity, &mut AdtParsingTask)>,
+) {
+    let pool = AsyncComputeTaskPool::get();
+    let cam_pos: Vec3 = camera.single().translation;
+
+    let x = ((17066.66656 - cam_pos.x) / ADT_SIZE).floor();
+    let y = ((17066.66656 - cam_pos.z) / ADT_SIZE).floor();
+
+    // Get a list of ADTs that we actually need loaded at this point in time.
+    let adt_coords = get_adts_in_range((y as i32, x as i32), 1);
+
+    // Skip this cycle if the ADTs are already loaded.
+    let active_adts: Vec<(u32, u32)> = adts.iter().map(|a| (a.x, a.y)).collect();
+    if adt_coords.iter().all(|a| active_adts.contains(a)) {
+        return
+    }
+
+    // Skip this cycle if we've already queued chunks.
+    let count = chunk_tasks.iter().count();
+    if count > 0 {
+        return
+    }
+
+    // Despawn any ADTs we have loaded already that are out of range.
+    adt_entities_lookup.retain(|k, v| {
+        if !adt_coords.contains(k) {
+            println!("Despawning: {:?}", k);
+            for e in v {
+                commands.entity(*e).despawn();
+            }
+            false
+        } else {
+            true
+        }
+    });
+
+    println!("Active ADTs: {:?}", active_adts);
+    println!("Attempting to load adts: {:?}", adt_coords);
+
+    // Add ADT load futures to the queue. 
+    for c in adt_coords {
+        let adt_name = format!("{}_{}_{}.adt", wdt.path.file_stem().and_then(|n| n.to_str()).expect("WDT should have a extension."), c.0, c.1);
+        let adt_path = wdt.path
+            .parent().expect("WDT file should be in a folder with the ADT files.")
+            .join(adt_name);
+
+        let mphd_flags = wdt.mphd.as_ref().and_then(|chunk| Some(chunk.flags.clone())).expect("WDT should have a valid MPHD chunk");
+
+        let task = pool.spawn(async move {
+            parser::ADT::from_file(adt_path, &mphd_flags).ok()
+        });
+
+        commands.spawn().insert(AdtParsingTask(task));
+    }
+}
+
+fn chunk_loader(
+    mut commands: Commands,
+    mut adts: ResMut<Vec<parser::ADT>>,
+    mut chunk_tasks: Query<(Entity, &mut AdtParsingTask)>,
+) {
+    for (entity, mut task) in &mut chunk_tasks {
+        if let Some(task) = future::block_on(future::poll_once(&mut task.0)) {
+            if let Some(adt) = task {
+                adts.push(adt);
+            }
+
+            commands.entity(entity).remove::<AdtParsingTask>();
+        }
+    }
+}
+
+fn chunk_coordinates(
+    adts: Res<Vec<parser::adt::ADT>>,
+    mut chunk_lookup: ResMut<HashMap<ChunkCoords, (parser::ADT, types::adt::MCNK)>>,
+) {
+    for adt in adts.iter() {
+        for chunk in adt.mcnk.iter() {
+            let coords = ChunkCoords::from_wow_pos(chunk.position);
+            if chunk_lookup.get(&coords).is_none() {
+                chunk_lookup.insert(coords, (adt.clone(), chunk.clone()));
+            }
+        }
+    }
+}
+
 fn input(
     keys: Res<Input<KeyCode>>,
+    adts: Res<Vec<parser::adt::ADT>>,
+    mut query: Query<&mut Transform, With<FlyCam>>,
     mut wireframe_config: ResMut<WireframeConfig>,
 ) {
     if keys.any_just_pressed([KeyCode::Equals]) {
         wireframe_config.global = !wireframe_config.global;
+    }
+
+    if keys.just_pressed(KeyCode::Return) {
+        let mut cam = query.single_mut();
+
+        let center_adt = &adts[adts.len() / 2];
+        let center_chunk = &center_adt.mcnk[center_adt.mcnk.len() / 2];
+        let initial_position = Vec3::new(
+            center_chunk.position.x,
+            center_chunk.position.z,
+            center_chunk.position.y,
+        );
+
+        cam.translation = initial_position;
     }
 }
 
 fn ui(
     mut egui_context: ResMut<EguiContext>,
     query: Query<&mut Transform, With<FlyCam>>,
-    chunk_lookup: Res<HashMap<ChunkCoords, (parser::adt::ADT, chunks::MCNK)>>,
+    chunk_lookup: Res<HashMap<ChunkCoords, (parser::adt::ADT, types::adt::MCNK)>>,
 ) {
     let cam_pos: Vec3 = query.single().translation;
     let coords = ChunkCoords::from_game_pos(cam_pos);

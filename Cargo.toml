@@ -17,5 +17,6 @@ opt-level = 3
 bevy = "0.8.1"
 bevy_egui = "0.16.1"
 bevy_flycam = "0.8.1"
+futures-lite = "1.12.0"
 wgpu-types = "0.13.2"
 wow_chunky = { path = "../wow_chunky" }

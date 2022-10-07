@@ -1671,6 +1671,7 @@ dependencies = [
  "bevy",
  "bevy_egui",
  "bevy_flycam",
+ "futures-lite",
  "wgpu-types",
  "wow_chunky",
 ]
