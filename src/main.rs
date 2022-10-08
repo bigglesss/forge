@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use bevy::{
     prelude::*,
     render::{render_resource::{Extent3d, TextureDimension, TextureFormat}, settings::WgpuSettings},
-    utils::hashbrown::HashMap, pbr::wireframe::{WireframePlugin, WireframeConfig}, tasks::{AsyncComputeTaskPool, Task}
+    utils::hashbrown::HashMap, pbr::wireframe::{WireframePlugin, WireframeConfig, Wireframe}, tasks::{AsyncComputeTaskPool, Task}
 };
 use bevy_egui::{egui::{self, Color32}, EguiContext, EguiPlugin};
 
@@ -14,10 +14,11 @@ use bevy::window::PresentMode;
 use bevy_flycam::{FlyCam, MovementSettings, NoCameraPlayerPlugin};
 
 use futures_lite::future;
+
 use materials::{CustomMaterial, WaterMaterial};
 use wgpu_types::{AddressMode, FilterMode, Features};
 
-use wow_chunky::{types, parser};
+use wow_chunky::{chunks, files};
 
 
 mod materials;
@@ -40,7 +41,7 @@ fn get_adts_in_range(origin: (i32, i32), range: i32) -> Vec<(u32, u32)> {
 }
 
 fn main() {
-    let wdt = parser::WDT::from_file(PathBuf::from("./test_data/Azeroth/Azeroth.wdt"))
+    let wdt = files::WDT::from_file(PathBuf::from("./test_data/Azeroth/Azeroth.wdt"))
         .expect("WDT should parse correctly.");
 
     App::new()
@@ -59,9 +60,9 @@ fn main() {
         .insert_resource(HashMap::<(String, usize), Handle<Image>>::new())
         .insert_resource(HashMap::<(u32, u32), Vec<Entity>>::new())
         // TODO: Should actually link to an adt key + chunk key, so the ui system can find the types from the stored adts (which should be a hashmap).
-        .insert_resource(HashMap::<ChunkCoords, (String, Option<types::adt::MTEX>, types::adt::MCNK)>::new())
+        .insert_resource(HashMap::<ChunkCoords, (String, Option<chunks::adt::MTEX>, chunks::adt::MCNK)>::new())
 
-        .insert_resource(Vec::<parser::ADT>::new())
+        .insert_resource(Vec::<files::ADT>::new())
 
         .add_plugins(DefaultPlugins)
         .add_plugin(MaterialPlugin::<CustomMaterial>::default())
@@ -77,7 +78,7 @@ fn main() {
         .add_system(chunk_queuer)
         .add_system(chunk_loader.after(chunk_queuer))
         .add_system(render_terrain.after(chunk_loader))
-        // .add_system(chunk_coordinates.after(chunk_loader))
+        .add_system(chunk_coordinates.after(chunk_loader))
         .add_system(input)
         .add_system(ui)
         .run();
@@ -125,7 +126,7 @@ fn process_blp(raw_filename: &String, textures: &mut ResMut<Assets<Image>>) -> H
 
     // TODO: Specular textures are being loaded, but probably not being used properly.
     // In-game textures look noticably less flat, even with constrast turned up. Look into improving the lighting quality or handling speculars properly?
-    let blp = parser::parse_blp(path.clone())
+    let blp = files::BLP::try_from(path.clone())
         .expect(format!("BLPs should be valid: {:?}", &path).as_str());
 
     let texture = generate_image_from_buffer(blp.width, blp.height, &blp.mipmaps[0].decompressed);
@@ -167,7 +168,7 @@ fn render_terrain(
     mut materials: ResMut<Assets<CustomMaterial>>,
     mut water_materials: ResMut<Assets<WaterMaterial>>,
     mut textures: ResMut<Assets<Image>>,
-    adts: Res<Vec<parser::adt::ADT>>,
+    adts: Res<Vec<files::ADT>>,
     mut blp_lookup: ResMut<HashMap<(String, usize), Handle<Image>>>,
     mut adt_entities_lookup: ResMut<HashMap<(u32, u32), Vec<Entity>>>,
 ) {
@@ -231,8 +232,31 @@ fn create_chunk_heightmesh(
     water_materials: &mut ResMut<Assets<WaterMaterial>>,
     layers: Vec<Option<Handle<Image>>>,
     alphas: Vec<Option<Handle<Image>>>,
-    chunk: &types::adt::MCNK,
+    chunk: &chunks::adt::MCNK,
 ) -> Vec<Entity> {
+    let mut chunk_entities: Vec<Entity> = Vec::new();
+
+    // Render the ground mesh.
+    let ground_id = create_ground_mesh(commands, meshes, materials, layers, alphas, chunk);
+    chunk_entities.push(ground_id);
+
+    // Render water if it exists in the chunk.
+    if chunk.flags.lq_ocean { //|| chunk.flags.lq_magma || chunk.flags.lq_river {
+        let water_id = create_water_mesh(commands, meshes, water_materials, chunk);
+        chunk_entities.push(water_id);
+    }
+
+    chunk_entities
+}
+
+fn create_ground_mesh(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<CustomMaterial>>,
+    layers: Vec<Option<Handle<Image>>>,
+    alphas: Vec<Option<Handle<Image>>>,
+    chunk: &chunks::adt::MCNK,
+) -> Entity {
     let mut indices: Vec<u32> = Vec::new();
     for x in 0..8 {
         for y in 0..8 {
@@ -280,8 +304,6 @@ fn create_chunk_heightmesh(
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
 
-    let mut chunk_entities: Vec<Entity> = Vec::new();
-
     let heightmesh = commands.spawn_bundle(MaterialMeshBundle {
         mesh: meshes.add(mesh),
         material: materials.add(CustomMaterial {
@@ -296,25 +318,58 @@ fn create_chunk_heightmesh(
         }),
         ..default()
     });
-    chunk_entities.push(heightmesh.id());
 
-    // Render water if it exists in the chunk.
-    if chunk.flags.lq_magma || chunk.flags.lq_ocean || chunk.flags.lq_river {
-        let height_range = &chunk.mclq.height;
-        let watermesh = commands.spawn_bundle(MaterialMeshBundle {
-            mesh: meshes.add(Mesh::from(shape::Plane { size: CHUNK_SIZE })),
-            material: water_materials.add(WaterMaterial {}),
-            transform: Transform::from_xyz(
-                chunk.position.x + (CHUNK_SIZE / 2.0),
-                height_range.max,
-                chunk.position.y + (CHUNK_SIZE / 2.0),
-            ),
-            ..default()
-        });
-        chunk_entities.push(watermesh.id());
+    heightmesh.id()
+}
+
+fn create_water_mesh(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    water_materials: &mut ResMut<Assets<WaterMaterial>>,
+    chunk: &chunks::adt::MCNK,
+) -> Entity {
+    let spread = CHUNK_SIZE / 8.;
+
+    let chunk_position = [chunk.position.x, chunk.position.y];
+    let max_water_height = chunk.mclq.height.max;
+
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    for x in 0..9 {
+        for y in 0..9 {
+            let position = [chunk_position[0] - ((x as f32) * spread), max_water_height, chunk_position[1] - ((y as f32) * spread)];
+            positions.push(position);
+            normals.push([1.0, 1.0, 1.0]);
+        }
     }
 
-    chunk_entities
+    let mut indices: Vec<u32> = Vec::new();
+    for x in 0..8 {
+        for y in 0..8 {
+            indices.push(x + 9 + (y * 9));
+            indices.push(x + (y * 9));
+            indices.push(x + 1 + (y * 9));
+
+            indices.push(x + 9 + (y * 9));
+            indices.push(x + 1 + (y * 9));
+            indices.push(x + 10 + (y * 9));
+        }
+    }
+
+    let indices = mesh::Indices::U32(indices);
+
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList);
+    mesh.set_indices(Some(indices));
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+
+    let watermesh = commands.spawn_bundle(MaterialMeshBundle {
+        mesh: meshes.add(mesh),
+        material: water_materials.add(WaterMaterial {}),
+        ..default()
+    });
+
+    watermesh.id()
 }
 
 #[derive(Debug, Eq, Hash, PartialEq)]
@@ -324,10 +379,10 @@ struct ChunkCoords {
 }
 
 static ADT_SIZE: f32 = 533.33333;
-static CHUNK_SIZE: f32 = 33.334;
+static CHUNK_SIZE: f32 = ADT_SIZE / 16.;
 
 impl ChunkCoords {
-    fn from_wow_pos(position: types::shared::C3Vector) -> Self {
+    fn from_wow_pos(position: chunks::shared::C3Vector) -> Self {
         let x = if position.x >= 0.0 {
             ((position.x / CHUNK_SIZE).floor()) as i32
         } else {
@@ -364,7 +419,7 @@ fn setup(
 ) {
     commands
         .spawn_bundle(Camera3dBundle {
-            transform: Transform::from_xyz(ADT_SIZE * 0., 100., 0.)
+            transform: Transform::from_xyz(-ADT_SIZE * 2., 100., -ADT_SIZE * 0.)
                 .looking_at(Vec3::ZERO, Vec3::Y),
             ..default()
         })
@@ -372,15 +427,15 @@ fn setup(
 }
 
 #[derive(Component)]
-struct AdtParsingTask(Task<Option<parser::ADT>>);
+struct AdtParsingTask(Task<Option<files::ADT>>);
 
 
 /// Spawn chunk loading tasks as the camera moves around.
 fn chunk_queuer(
     mut commands: Commands,
     camera: Query<&mut Transform, With<FlyCam>>,
-    wdt: Res<parser::WDT>,
-    adts: Res<Vec<parser::ADT>>,
+    wdt: Res<files::WDT>,
+    adts: Res<Vec<files::ADT>>,
     mut adt_entities_lookup: ResMut<HashMap<(u32, u32), Vec<Entity>>>,
     chunk_tasks: Query<(Entity, &mut AdtParsingTask)>,
 ) {
@@ -391,7 +446,7 @@ fn chunk_queuer(
     let y = ((17066.66656 - cam_pos.z) / ADT_SIZE).floor();
 
     // Get a list of ADTs that we actually need loaded at this point in time.
-    let adt_coords = get_adts_in_range((y as i32, x as i32), 1);
+    let adt_coords = get_adts_in_range((y as i32, x as i32), 2);
 
     // Skip this cycle if the ADTs are already loaded.
     let active_adts: Vec<(u32, u32)> = adts.iter().map(|a| (a.x, a.y)).collect();
@@ -431,7 +486,7 @@ fn chunk_queuer(
         let mphd_flags = wdt.mphd.as_ref().and_then(|chunk| Some(chunk.flags.clone())).expect("WDT should have a valid MPHD chunk");
 
         let task = pool.spawn(async move {
-            parser::ADT::from_file(adt_path, &mphd_flags).ok()
+            files::ADT::from_file(adt_path, &mphd_flags).ok()
         });
 
         commands.spawn().insert(AdtParsingTask(task));
@@ -440,7 +495,7 @@ fn chunk_queuer(
 
 fn chunk_loader(
     mut commands: Commands,
-    mut adts: ResMut<Vec<parser::ADT>>,
+    mut adts: ResMut<Vec<files::ADT>>,
     mut chunk_tasks: Query<(Entity, &mut AdtParsingTask)>,
 ) {
     for (entity, mut task) in &mut chunk_tasks {
@@ -456,8 +511,8 @@ fn chunk_loader(
 }
 
 fn chunk_coordinates(
-    adts: Res<Vec<parser::adt::ADT>>,
-    mut chunk_lookup: ResMut<HashMap<ChunkCoords, (String, Option<types::adt::MTEX>, types::adt::MCNK)>>,
+    adts: Res<Vec<files::ADT>>,
+    mut chunk_lookup: ResMut<HashMap<ChunkCoords, (String, Option<chunks::adt::MTEX>, chunks::adt::MCNK)>>,
 ) {
     for adt in adts.iter() {
         let mtex = &adt.mtex;
@@ -472,17 +527,17 @@ fn chunk_coordinates(
 
 fn input(
     keys: Res<Input<KeyCode>>,
-    adts: Res<Vec<parser::adt::ADT>>,
+    adts: Res<Vec<files::ADT>>,
     mut query: Query<&mut Transform, With<FlyCam>>,
     mut wireframe_config: ResMut<WireframeConfig>,
 ) {
+    let mut cam = query.single_mut();
+
     if keys.any_just_pressed([KeyCode::Equals]) {
         wireframe_config.global = !wireframe_config.global;
     }
 
     if keys.just_pressed(KeyCode::Return) {
-        let mut cam = query.single_mut();
-
         let center_adt = &adts[adts.len() / 2];
         let center_chunk = &center_adt.mcnk[center_adt.mcnk.len() / 2];
         let initial_position = Vec3::new(
@@ -493,12 +548,16 @@ fn input(
 
         cam.translation = initial_position;
     }
+
+    if keys.just_pressed(KeyCode::C) && keys.pressed(KeyCode::LControl) {
+        println!(".go xyz {} {} {}", cam.translation.x, cam.translation.z, cam.translation.y);
+    }
 }
 
 fn ui(
     mut egui_context: ResMut<EguiContext>,
     query: Query<&mut Transform, With<FlyCam>>,
-    chunk_lookup: ResMut<HashMap<ChunkCoords, (String, Option<types::adt::MTEX>, types::adt::MCNK)>>,
+    chunk_lookup: ResMut<HashMap<ChunkCoords, (String, Option<chunks::adt::MTEX>, chunks::adt::MCNK)>>,
     chunk_tasks: Query<(Entity, &mut AdtParsingTask)>,
 ) {
     let cam_pos: Vec3 = query.single().translation;
