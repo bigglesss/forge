@@ -79,7 +79,7 @@ fn main() {
         .add_system(chunk_queuer)
         .add_system(chunk_loader.after(chunk_queuer))
         .add_system(render_terrain.after(chunk_loader))
-        .add_system(chunk_coordinates.after(chunk_loader))
+        // .add_system(chunk_coordinates.after(chunk_loader))
         .add_system(input)
         .add_system(ui)
         .run();
