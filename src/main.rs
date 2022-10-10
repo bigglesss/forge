@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use bevy::{
     prelude::*,
     render::{render_resource::{Extent3d, TextureDimension, TextureFormat}, settings::WgpuSettings},
-    utils::hashbrown::HashMap, pbr::wireframe::{WireframePlugin, WireframeConfig, Wireframe}, tasks::{AsyncComputeTaskPool, Task}
+    utils::hashbrown::HashMap, pbr::wireframe::{WireframePlugin, WireframeConfig}, tasks::{AsyncComputeTaskPool, Task}
 };
 use bevy_egui::{egui::{self, Color32}, EguiContext, EguiPlugin};
 
@@ -22,6 +22,7 @@ use wow_chunky::{chunks, files};
 
 
 mod materials;
+mod coordinates;
 
 fn get_adts_in_range(origin: (i32, i32), range: i32) -> Vec<(u32, u32)> {
     if range == 0 {
@@ -328,7 +329,7 @@ fn create_water_mesh(
     water_materials: &mut ResMut<Assets<WaterMaterial>>,
     chunk: &chunks::adt::MCNK,
 ) -> Entity {
-    let spread = CHUNK_SIZE / 8.;
+    let spread = coordinates::CHUNK_SIZE / 8.;
 
     let chunk_position = [chunk.position.x, chunk.position.y];
     let max_water_height = chunk.mclq.height.max;
@@ -378,20 +379,17 @@ struct ChunkCoords {
     y: i32,
 }
 
-static ADT_SIZE: f32 = 533.33333;
-static CHUNK_SIZE: f32 = ADT_SIZE / 16.;
-
 impl ChunkCoords {
     fn from_wow_pos(position: chunks::shared::C3Vector) -> Self {
         let x = if position.x >= 0.0 {
-            ((position.x / CHUNK_SIZE).floor()) as i32
+            ((position.x / coordinates::CHUNK_SIZE).floor()) as i32
         } else {
-            ((position.x / CHUNK_SIZE).ceil()) as i32
+            ((position.x / coordinates::CHUNK_SIZE).ceil()) as i32
         };
         let y = if position.y >= 0.0 {
-            ((position.y / CHUNK_SIZE).floor()) as i32
+            ((position.y / coordinates::CHUNK_SIZE).floor()) as i32
         } else {
-            ((position.y / CHUNK_SIZE).ceil()) as i32
+            ((position.y / coordinates::CHUNK_SIZE).ceil()) as i32
         };
 
         Self { x, y }
@@ -399,14 +397,14 @@ impl ChunkCoords {
 
     fn from_game_pos(position: Vec3) -> Self {
         let x = if position.x >= 0.0 {
-            ((position.x / CHUNK_SIZE).floor()) as i32
+            ((position.x / coordinates::CHUNK_SIZE).floor()) as i32
         } else {
-            ((position.x / CHUNK_SIZE).ceil()) as i32
+            ((position.x / coordinates::CHUNK_SIZE).ceil()) as i32
         };
         let y = if position.z >= 0.0 {
-            ((position.z / CHUNK_SIZE).floor()) as i32
+            ((position.z / coordinates::CHUNK_SIZE).floor()) as i32
         } else {
-            ((position.z / CHUNK_SIZE).ceil()) as i32
+            ((position.z / coordinates::CHUNK_SIZE).ceil()) as i32
         };
 
         Self { x, y }
@@ -419,8 +417,12 @@ fn setup(
 ) {
     commands
         .spawn_bundle(Camera3dBundle {
-            transform: Transform::from_xyz(-ADT_SIZE * 2., 100., -ADT_SIZE * 0.)
+            transform: Transform::from_xyz(-coordinates::ADT_SIZE * 2., 100., -coordinates::ADT_SIZE * 0.)
                 .looking_at(Vec3::ZERO, Vec3::Y),
+            projection: bevy::render::camera::Projection::Perspective(PerspectiveProjection {
+                fov: std::f32::consts::PI / 5.0,
+                ..default()
+            }),
             ..default()
         })
         .insert(FlyCam);
@@ -442,11 +444,11 @@ fn chunk_queuer(
     let pool = AsyncComputeTaskPool::get();
     let cam_pos: Vec3 = camera.single().translation;
 
-    let x = ((17066.66656 - cam_pos.x) / ADT_SIZE).floor();
-    let y = ((17066.66656 - cam_pos.z) / ADT_SIZE).floor();
+    let x = ((17066.66656 - cam_pos.x) / coordinates::ADT_SIZE).floor();
+    let y = ((17066.66656 - cam_pos.z) / coordinates::ADT_SIZE).floor();
 
     // Get a list of ADTs that we actually need loaded at this point in time.
-    let adt_coords = get_adts_in_range((y as i32, x as i32), 2);
+    let adt_coords = get_adts_in_range((y as i32, x as i32), 4);
 
     // Skip this cycle if the ADTs are already loaded.
     let active_adts: Vec<(u32, u32)> = adts.iter().map(|a| (a.x, a.y)).collect();
