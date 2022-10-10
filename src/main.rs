@@ -151,7 +151,6 @@ fn process_alpha_map(data: &Vec<u8>, textures: &mut ResMut<Assets<Image>>) -> Ha
         TextureFormat::R8Unorm,
     );
 
-    // Wrap u and v values, to allow for easier tiling.
     tex.sampler_descriptor = ImageSampler::Descriptor(SamplerDescriptor {
         mag_filter: FilterMode::Linear,
         min_filter: FilterMode::Linear,
@@ -242,7 +241,7 @@ fn create_chunk_heightmesh(
     chunk_entities.push(ground_id);
 
     // Render water if it exists in the chunk.
-    if chunk.flags.lq_ocean { //|| chunk.flags.lq_magma || chunk.flags.lq_river {
+    if chunk.flags.lq_ocean || chunk.flags.lq_magma || chunk.flags.lq_river {
         let water_id = create_water_mesh(commands, meshes, water_materials, chunk);
         chunk_entities.push(water_id);
     }
@@ -448,7 +447,7 @@ fn chunk_queuer(
     let y = ((17066.66656 - cam_pos.z) / coordinates::ADT_SIZE).floor();
 
     // Get a list of ADTs that we actually need loaded at this point in time.
-    let adt_coords = get_adts_in_range((y as i32, x as i32), 4);
+    let adt_coords = get_adts_in_range((y as i32, x as i32), 2);
 
     // Skip this cycle if the ADTs are already loaded.
     let active_adts: Vec<(u32, u32)> = adts.iter().map(|a| (a.x, a.y)).collect();
