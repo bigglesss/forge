@@ -65,30 +65,39 @@ fn main() {
         .insert_resource(HashMap::<coordinates::ADTPosition, Option<files::ADT>>::new())
 
         .add_plugins(DefaultPlugins)
+
         .add_plugin(MaterialPlugin::<CustomMaterial>::default())
         .add_plugin(MaterialPlugin::<WaterMaterial>::default())
+
         .add_plugin(NoCameraPlayerPlugin)
-        .add_plugin(EguiPlugin)
-        .add_plugin(WireframePlugin)
         .insert_resource(MovementSettings {
             sensitivity: 0.00010,
-            speed: 100.0,
+            speed: 50.0,
         })
+
+        .add_plugin(EguiPlugin)
+        .add_plugin(WireframePlugin)
+
         .add_startup_system(setup)
+
         .add_system(chunk_queuer)
         .add_system(chunk_loader.after(chunk_queuer))
+
         .add_system(render_terrain.after(chunk_loader))
+
         .add_system_set(
             SystemSet::new()
                 .with_run_criteria(FixedTimestep::step(1.0))
                 .with_system(chunk_coordinates.after(chunk_loader))
         )
+
         .add_system(input)
         .add_system(ui)
+
         .run();
 }
 
-fn generate_image_from_buffer(width: u32, height: u32, data: &Vec<u8>) -> Image {
+fn generate_image_from_buffer(width: u32, height: u32, data: &[u8]) -> Image {
     let mut tex = Image::new(
         Extent3d {
             width,
@@ -96,7 +105,7 @@ fn generate_image_from_buffer(width: u32, height: u32, data: &Vec<u8>) -> Image 
             ..default()
         },
         TextureDimension::D2,
-        data.clone(),
+        data.to_owned(),
         TextureFormat::Rgba8Unorm,
     );
 
@@ -112,12 +121,12 @@ fn generate_image_from_buffer(width: u32, height: u32, data: &Vec<u8>) -> Image 
     tex
 }
 
-fn process_blp(raw_filename: &String, textures: &mut ResMut<Assets<Image>>) -> Handle<Image> {
+fn process_blp(raw_filename: &str, textures: &mut ResMut<Assets<Image>>) -> Handle<Image> {
     let specular_filename = format!(
         "./test_data/{}_s.blp",
-        raw_filename.replace("\\", "/").replace(".blp", "")
+        raw_filename.replace('\\', "/").replace(".blp", "")
     );
-    let normal_filename = format!("./test_data/{}", raw_filename.replace("\\", "/"));
+    let normal_filename = format!("./test_data/{}", raw_filename.replace('\\', "/"));
 
     let specular_path = PathBuf::from(&specular_filename);
     let normal_path = PathBuf::from(&normal_filename);
@@ -129,19 +138,18 @@ fn process_blp(raw_filename: &String, textures: &mut ResMut<Assets<Image>>) -> H
     };
 
     // TODO: Specular textures are being loaded, but probably not being used properly.
-    // In-game textures look noticably less flat, even with constrast turned up. Look into improving the lighting quality or handling speculars properly?
+    // In-game textures look noticably less flat, even with constrast turned up. Look into improving the lighting quality or handling speculars work properly?
     let blp = files::BLP::try_from(path.clone())
-        .expect(format!("BLPs should be valid: {:?}", &path).as_str());
+        .unwrap_or_else(|_| panic!("BLPs should be valid: {:?}", &path));
 
     let texture = generate_image_from_buffer(blp.width, blp.height, &blp.mipmaps[0].decompressed);
-    let texture_handle = textures.add(texture);
 
-    texture_handle
+    textures.add(texture)
 }
 
-fn process_alpha_map(data: &Vec<u8>, textures: &mut ResMut<Assets<Image>>) -> Handle<Image> {
+fn process_alpha_map(data: &[u8], textures: &mut ResMut<Assets<Image>>) -> Handle<Image> {
     // Multiply alphas by 17 to readjust the range from 0-15 to 0-255.
-    let data: Vec<u8> = data.into_iter().map(|v| v * 17).collect();
+    let data: Vec<u8> = data.iter().map(|v| v * 17).collect();
 
     let mut tex = Image::new(
         Extent3d {
@@ -160,9 +168,7 @@ fn process_alpha_map(data: &Vec<u8>, textures: &mut ResMut<Assets<Image>>) -> Ha
         ..default()
     });
 
-    let texture_handle = textures.add(tex);
-
-    texture_handle
+    textures.add(tex)
 }
 
 fn render_terrain(
@@ -196,16 +202,15 @@ fn render_terrain(
                 let mut layers: Vec<Option<Handle<Image>>> = vec![None, None, None, None];
                 // The first layer never uses alpha.
                 let mut alphas: Vec<Option<Handle<Image>>> = vec![
-                    Some(process_alpha_map(&vec![0 as u8; 64 * 64], &mut textures)),
-                    Some(process_alpha_map(&vec![0 as u8; 64 * 64], &mut textures)),
-                    Some(process_alpha_map(&vec![0 as u8; 64 * 64], &mut textures)),
+                    Some(process_alpha_map(&vec![0_u8; 64 * 64], &mut textures)),
+                    Some(process_alpha_map(&vec![0_u8; 64 * 64], &mut textures)),
+                    Some(process_alpha_map(&vec![0_u8; 64 * 64], &mut textures)),
                 ];
 
                 for (i, texture_layer) in chunk.mcly.layers.iter().enumerate() {
                     let texture_id = texture_layer.texture_id as usize;
                     layers[i] = blp_lookup
-                        .get(&(adt.filename.clone(), texture_id))
-                        .and_then(|t| Some(t.clone()));
+                        .get(&(adt.filename.clone(), texture_id)).cloned();
                 }
 
                 for (i, alpha_layer) in chunk.mcal.layers.iter().enumerate() {
@@ -447,7 +452,8 @@ fn chunk_queuer(
             .parent().expect("WDT file should be in a folder with the ADT files.")
             .join(adt_name);
 
-        let mphd_flags = wdt.mphd.as_ref().and_then(|chunk| Some(chunk.flags.clone())).expect("WDT should have a valid MPHD chunk");
+        let mphd_flags = wdt.mphd.as_ref().map(|chunk| chunk.flags.clone())
+            .expect("WDT should have a valid MPHD chunk");
 
         let task = pool.spawn(async move {
             files::ADT::from_file(adt_path, &mphd_flags).ok()
@@ -475,15 +481,13 @@ fn chunk_coordinates(
     adts: Res<HashMap::<coordinates::ADTPosition, Option<files::ADT>>>,
     mut chunk_lookup: ResMut<HashMap<coordinates::ChunkPosition, (String, Option<chunks::adt::MTEX>, chunks::adt::MCNK)>>,
 ) {
-    for adt in adts.values() {
-        if let Some(adt) = adt {
-            let mtex = &adt.mtex;
-            for chunk in adt.mcnk.iter() {
-                let world_pos = coordinates::WorldPosition::from(chunk.position);
-                let chunk_pos = coordinates::ChunkPosition::from(&world_pos);
-                if chunk_lookup.get(&chunk_pos).is_none() {
-                    chunk_lookup.insert(chunk_pos, (adt.filename.clone(), mtex.clone(), chunk.clone()));
-                }
+    for adt in adts.values().flatten() {
+        let mtex = &adt.mtex;
+        for chunk in adt.mcnk.iter() {
+            let world_pos = coordinates::WorldPosition::from(chunk.position);
+            let chunk_pos = coordinates::ChunkPosition::from(&world_pos);
+            if chunk_lookup.get(&chunk_pos).is_none() {
+                chunk_lookup.insert(chunk_pos, (adt.filename.clone(), mtex.clone(), chunk.clone()));
             }
         }
     }

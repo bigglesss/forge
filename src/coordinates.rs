@@ -2,7 +2,7 @@ use bevy::prelude::*;
 
 use wow_chunky::chunks::shared::C3Vector;
 
-pub static ADT_SIZE: f32 = 533.33333;
+pub static ADT_SIZE: f32 = 533.333_3;
 
 pub static CHUNK_SIZE: f32 = ADT_SIZE / 16.;
 pub static CHUNK_LEEWAY: f32 = 0.001;
@@ -22,8 +22,8 @@ impl From<&WorldPosition> for ADTPosition {
         // My coordinates map up correctly when I use them in-game,
         // so I don't think I've flipped any axes anywhere.
         Self {
-            x: ((17066.66656 - position.y) / ADT_SIZE).floor() as u32,
-            y: ((17066.66656 - position.x) / ADT_SIZE).floor() as u32,
+            x: ((17_066.666 - position.y) / ADT_SIZE).floor() as u32,
+            y: ((17_066.666 - position.x) / ADT_SIZE).floor() as u32,
         }
     }
 }
@@ -50,10 +50,7 @@ impl From<&WorldPosition> for ChunkPosition {
             (((position.y / CHUNK_SIZE) - CHUNK_LEEWAY).ceil()) as i32
         };
 
-        Self {
-            x,
-            y,
-        }
+        Self { x, y }
     }
 }
 
