@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use bevy::{
     prelude::*,
     render::{render_resource::{Extent3d, TextureDimension, TextureFormat}, settings::WgpuSettings},
-    utils::hashbrown::HashMap, pbr::wireframe::{WireframePlugin, WireframeConfig}, tasks::{AsyncComputeTaskPool, Task}
+    utils::hashbrown::HashMap, pbr::wireframe::{WireframePlugin, WireframeConfig}, tasks::{AsyncComputeTaskPool, Task}, time::FixedTimestep
 };
 use bevy_egui::{egui::{self, Color32}, EguiContext, EguiPlugin};
 
@@ -61,7 +61,7 @@ fn main() {
         .insert_resource(HashMap::<(String, usize), Handle<Image>>::new())
         .insert_resource(HashMap::<(u32, u32), Vec<Entity>>::new())
         // TODO: Should actually link to an adt key + chunk key, so the ui system can find the types from the stored adts (which should be a hashmap).
-        .insert_resource(HashMap::<ChunkCoords, (String, Option<chunks::adt::MTEX>, chunks::adt::MCNK)>::new())
+        .insert_resource(HashMap::<coordinates::ChunkPosition, (String, Option<chunks::adt::MTEX>, chunks::adt::MCNK)>::new())
 
         .insert_resource(Vec::<files::ADT>::new())
 
@@ -79,7 +79,11 @@ fn main() {
         .add_system(chunk_queuer)
         .add_system(chunk_loader.after(chunk_queuer))
         .add_system(render_terrain.after(chunk_loader))
-        // .add_system(chunk_coordinates.after(chunk_loader))
+        .add_system_set(
+            SystemSet::new()
+                .with_run_criteria(FixedTimestep::step(1.0))
+                .with_system(chunk_coordinates.after(chunk_loader))
+        )
         .add_system(input)
         .add_system(ui)
         .run();
@@ -372,45 +376,6 @@ fn create_water_mesh(
     watermesh.id()
 }
 
-#[derive(Debug, Eq, Hash, PartialEq)]
-struct ChunkCoords {
-    x: i32,
-    y: i32,
-}
-
-impl ChunkCoords {
-    fn from_wow_pos(position: chunks::shared::C3Vector) -> Self {
-        let x = if position.x >= 0.0 {
-            ((position.x / coordinates::CHUNK_SIZE).floor()) as i32
-        } else {
-            ((position.x / coordinates::CHUNK_SIZE).ceil()) as i32
-        };
-        let y = if position.y >= 0.0 {
-            ((position.y / coordinates::CHUNK_SIZE).floor()) as i32
-        } else {
-            ((position.y / coordinates::CHUNK_SIZE).ceil()) as i32
-        };
-
-        Self { x, y }
-    }
-
-    fn from_game_pos(position: Vec3) -> Self {
-        let x = if position.x >= 0.0 {
-            ((position.x / coordinates::CHUNK_SIZE).floor()) as i32
-        } else {
-            ((position.x / coordinates::CHUNK_SIZE).ceil()) as i32
-        };
-        let y = if position.z >= 0.0 {
-            ((position.z / coordinates::CHUNK_SIZE).floor()) as i32
-        } else {
-            ((position.z / coordinates::CHUNK_SIZE).ceil()) as i32
-        };
-
-        Self { x, y }
-    }
-}
-
-
 fn setup(
     mut commands: Commands,
 ) {
@@ -442,12 +407,11 @@ fn chunk_queuer(
 ) {
     let pool = AsyncComputeTaskPool::get();
     let cam_pos: Vec3 = camera.single().translation;
-
-    let x = ((17066.66656 - cam_pos.x) / coordinates::ADT_SIZE).floor();
-    let y = ((17066.66656 - cam_pos.z) / coordinates::ADT_SIZE).floor();
+    let game_pos = coordinates::WorldPosition::from(cam_pos);
+    let adt_pos = coordinates::ADTPosition::from(&game_pos);
 
     // Get a list of ADTs that we actually need loaded at this point in time.
-    let adt_coords = get_adts_in_range((y as i32, x as i32), 2);
+    let adt_coords = get_adts_in_range((adt_pos.y as i32, adt_pos.x as i32), 0);
 
     // Skip this cycle if the ADTs are already loaded.
     let active_adts: Vec<(u32, u32)> = adts.iter().map(|a| (a.x, a.y)).collect();
@@ -513,14 +477,15 @@ fn chunk_loader(
 
 fn chunk_coordinates(
     adts: Res<Vec<files::ADT>>,
-    mut chunk_lookup: ResMut<HashMap<ChunkCoords, (String, Option<chunks::adt::MTEX>, chunks::adt::MCNK)>>,
+    mut chunk_lookup: ResMut<HashMap<coordinates::ChunkPosition, (String, Option<chunks::adt::MTEX>, chunks::adt::MCNK)>>,
 ) {
     for adt in adts.iter() {
         let mtex = &adt.mtex;
         for chunk in adt.mcnk.iter() {
-            let coords = ChunkCoords::from_wow_pos(chunk.position);
-            if chunk_lookup.get(&coords).is_none() {
-                chunk_lookup.insert(coords, (adt.filename.clone(), mtex.clone(), chunk.clone()));
+            let world_pos = coordinates::WorldPosition::from(chunk.position);
+            let chunk_pos = coordinates::ChunkPosition::from(&world_pos);
+            if chunk_lookup.get(&chunk_pos).is_none() {
+                chunk_lookup.insert(chunk_pos, (adt.filename.clone(), mtex.clone(), chunk.clone()));
             }
         }
     }
@@ -558,12 +523,13 @@ fn input(
 fn ui(
     mut egui_context: ResMut<EguiContext>,
     query: Query<&mut Transform, With<FlyCam>>,
-    chunk_lookup: ResMut<HashMap<ChunkCoords, (String, Option<chunks::adt::MTEX>, chunks::adt::MCNK)>>,
+    chunk_lookup: ResMut<HashMap<coordinates::ChunkPosition, (String, Option<chunks::adt::MTEX>, chunks::adt::MCNK)>>,
     chunk_tasks: Query<(Entity, &mut AdtParsingTask)>,
 ) {
     let cam_pos: Vec3 = query.single().translation;
-    let coords = ChunkCoords::from_game_pos(cam_pos);
-    let location = chunk_lookup.get(&coords);
+    let world_pos = coordinates::WorldPosition::from(cam_pos);
+    let chunk_pos = coordinates::ChunkPosition::from(&world_pos);
+    let location = chunk_lookup.get(&chunk_pos);
 
     egui::Window::new("Chunk info")
         .min_width(450.0)
