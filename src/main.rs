@@ -24,17 +24,17 @@ use wow_chunky::{chunks, files};
 mod materials;
 mod coordinates;
 
-fn get_adts_in_range(origin: (i32, i32), range: i32) -> Vec<(u32, u32)> {
+fn get_adts_in_range(origin: coordinates::ADTPosition, range: u32) -> Vec<coordinates::ADTPosition> {
     if range == 0 {
-        return vec![(origin.0 as u32, origin.1 as u32)]
+        return vec![origin]
     }
 
-    let mut adts: Vec<(u32, u32)> = Vec::new();
-    for x in -range..=range {
-        for y in -range..=range {
-            let adt_x = (origin.0 + x) as u32;
-            let adt_y = (origin.1 + y) as u32;
-            adts.push((adt_x, adt_y));
+    let mut adts: Vec<coordinates::ADTPosition> = Vec::new();
+    for x in 0..=range {
+        for y in 0..=range {
+            let adt_x = origin.x - (range/2) + x;
+            let adt_y = origin.y - (range/2) + y;
+            adts.push(coordinates::ADTPosition{x: adt_x, y: adt_y});
         }
     }
 
@@ -59,11 +59,10 @@ fn main() {
         .insert_resource(wdt)
 
         .insert_resource(HashMap::<(String, usize), Handle<Image>>::new())
-        .insert_resource(HashMap::<(u32, u32), Vec<Entity>>::new())
-        // TODO: Should actually link to an adt key + chunk key, so the ui system can find the types from the stored adts (which should be a hashmap).
+        .insert_resource(HashMap::<coordinates::ADTPosition, Vec<Entity>>::new())
         .insert_resource(HashMap::<coordinates::ChunkPosition, (String, Option<chunks::adt::MTEX>, chunks::adt::MCNK)>::new())
 
-        .insert_resource(Vec::<files::ADT>::new())
+        .insert_resource(HashMap::<coordinates::ADTPosition, Option<files::ADT>>::new())
 
         .add_plugins(DefaultPlugins)
         .add_plugin(MaterialPlugin::<CustomMaterial>::default())
@@ -172,60 +171,62 @@ fn render_terrain(
     mut materials: ResMut<Assets<CustomMaterial>>,
     mut water_materials: ResMut<Assets<WaterMaterial>>,
     mut textures: ResMut<Assets<Image>>,
-    adts: Res<Vec<files::ADT>>,
+    adts: Res<HashMap<coordinates::ADTPosition, Option<files::ADT>>>,
     mut blp_lookup: ResMut<HashMap<(String, usize), Handle<Image>>>,
-    mut adt_entities_lookup: ResMut<HashMap<(u32, u32), Vec<Entity>>>,
+    mut adt_entities_lookup: ResMut<HashMap<coordinates::ADTPosition, Vec<Entity>>>,
 ) {
-    for adt in adts.iter() {
+    for (position, adt) in adts.iter() {
         // Skip ADTs we've already loaded.
-        if adt_entities_lookup.get(&(adt.x, adt.y)).is_some() {
+        if adt_entities_lookup.get(position).is_some() {
             continue;
         }
 
-        // Load all BLPs.
-        if let Some(mtex) = &adt.mtex {
-            for (i, filename) in mtex.filenames.iter().enumerate() {
-                let texture = process_blp(filename, &mut textures);
-                blp_lookup.insert((adt.filename.clone(), i), texture);
+        if let Some(adt) = adt {
+            // Load all BLPs.
+            if let Some(mtex) = &adt.mtex {
+                for (i, filename) in mtex.filenames.iter().enumerate() {
+                    let texture = process_blp(filename, &mut textures);
+                    blp_lookup.insert((adt.filename.clone(), i), texture);
+                }
             }
+
+            let mut adt_entities: Vec<Entity> = Vec::new();
+            // Render chunks.
+            for chunk in adt.mcnk.iter() {
+                let mut layers: Vec<Option<Handle<Image>>> = vec![None, None, None, None];
+                // The first layer never uses alpha.
+                let mut alphas: Vec<Option<Handle<Image>>> = vec![
+                    Some(process_alpha_map(&vec![0 as u8; 64 * 64], &mut textures)),
+                    Some(process_alpha_map(&vec![0 as u8; 64 * 64], &mut textures)),
+                    Some(process_alpha_map(&vec![0 as u8; 64 * 64], &mut textures)),
+                ];
+
+                for (i, texture_layer) in chunk.mcly.layers.iter().enumerate() {
+                    let texture_id = texture_layer.texture_id as usize;
+                    layers[i] = blp_lookup
+                        .get(&(adt.filename.clone(), texture_id))
+                        .and_then(|t| Some(t.clone()));
+                }
+
+                for (i, alpha_layer) in chunk.mcal.layers.iter().enumerate() {
+                    let alpha_map = process_alpha_map(&alpha_layer.alpha_map, &mut textures);
+                    alphas[i] = Some(alpha_map);
+                }
+
+                let chunk_entities = create_chunk_heightmesh(
+                    &mut commands,
+                    &mut meshes,
+                    &mut materials,
+                    &mut water_materials,
+                    layers,
+                    alphas,
+                    chunk,
+                );
+                adt_entities.extend(chunk_entities);
+            }
+
+            adt_entities_lookup.insert(position.clone(), adt_entities);
         }
-
-        let mut adt_entities: Vec<Entity> = Vec::new();
-        // Render chunks.
-        for chunk in adt.mcnk.iter() {
-            let mut layers: Vec<Option<Handle<Image>>> = vec![None, None, None, None];
-            // The first layer never uses alpha.
-            let mut alphas: Vec<Option<Handle<Image>>> = vec![
-                Some(process_alpha_map(&vec![0 as u8; 64 * 64], &mut textures)),
-                Some(process_alpha_map(&vec![0 as u8; 64 * 64], &mut textures)),
-                Some(process_alpha_map(&vec![0 as u8; 64 * 64], &mut textures)),
-            ];
-
-            for (i, texture_layer) in chunk.mcly.layers.iter().enumerate() {
-                let texture_id = texture_layer.texture_id as usize;
-                layers[i] = blp_lookup
-                    .get(&(adt.filename.clone(), texture_id))
-                    .and_then(|t| Some(t.clone()));
-            }
-
-            for (i, alpha_layer) in chunk.mcal.layers.iter().enumerate() {
-                let alpha_map = process_alpha_map(&alpha_layer.alpha_map, &mut textures);
-                alphas[i] = Some(alpha_map);
-            }
-
-            let chunk_entities = create_chunk_heightmesh(
-                &mut commands,
-                &mut meshes,
-                &mut materials,
-                &mut water_materials,
-                layers,
-                alphas,
-                chunk,
-            );
-            adt_entities.extend(chunk_entities);
-        }
-
-        adt_entities_lookup.insert((adt.x, adt.y), adt_entities);
     }
 }
 
@@ -381,7 +382,7 @@ fn setup(
 ) {
     commands
         .spawn_bundle(Camera3dBundle {
-            transform: Transform::from_xyz(-coordinates::ADT_SIZE * 2., 100., -coordinates::ADT_SIZE * 0.)
+            transform: Transform::from_xyz(-coordinates::ADT_SIZE * 10., 100., -coordinates::ADT_SIZE * 10.)
                 .looking_at(Vec3::ZERO, Vec3::Y),
             projection: bevy::render::camera::Projection::Perspective(PerspectiveProjection {
                 fov: std::f32::consts::PI / 5.0,
@@ -393,7 +394,7 @@ fn setup(
 }
 
 #[derive(Component)]
-struct AdtParsingTask(Task<Option<files::ADT>>);
+struct AdtParsingTask(coordinates::ADTPosition, Task<Option<files::ADT>>);
 
 
 /// Spawn chunk loading tasks as the camera moves around.
@@ -401,8 +402,8 @@ fn chunk_queuer(
     mut commands: Commands,
     camera: Query<&mut Transform, With<FlyCam>>,
     wdt: Res<files::WDT>,
-    adts: Res<Vec<files::ADT>>,
-    mut adt_entities_lookup: ResMut<HashMap<(u32, u32), Vec<Entity>>>,
+    adts: Res<HashMap<coordinates::ADTPosition, Option<files::ADT>>>,
+    mut adt_entities_lookup: ResMut<HashMap<coordinates::ADTPosition, Vec<Entity>>>,
     chunk_tasks: Query<(Entity, &mut AdtParsingTask)>,
 ) {
     let pool = AsyncComputeTaskPool::get();
@@ -411,11 +412,10 @@ fn chunk_queuer(
     let adt_pos = coordinates::ADTPosition::from(&game_pos);
 
     // Get a list of ADTs that we actually need loaded at this point in time.
-    let adt_coords = get_adts_in_range((adt_pos.y as i32, adt_pos.x as i32), 0);
+    let adt_coords = get_adts_in_range(adt_pos, 4);
 
     // Skip this cycle if the ADTs are already loaded.
-    let active_adts: Vec<(u32, u32)> = adts.iter().map(|a| (a.x, a.y)).collect();
-    if adt_coords.iter().all(|a| active_adts.contains(a)) {
+    if adt_coords.iter().all(|k| adts.contains_key(k)) {
         return
     }
 
@@ -438,12 +438,11 @@ fn chunk_queuer(
         }
     });
 
-    println!("Active ADTs: {:?}", active_adts);
     println!("Attempting to load adts: {:?}", adt_coords);
 
     // Add ADT load futures to the queue. 
     for c in adt_coords {
-        let adt_name = format!("{}_{}_{}.adt", wdt.path.file_stem().and_then(|n| n.to_str()).expect("WDT should have a extension."), c.0, c.1);
+        let adt_name = format!("{}_{}_{}.adt", wdt.path.file_stem().and_then(|n| n.to_str()).expect("WDT should have a extension."), c.x, c.y);
         let adt_path = wdt.path
             .parent().expect("WDT file should be in a folder with the ADT files.")
             .join(adt_name);
@@ -454,21 +453,18 @@ fn chunk_queuer(
             files::ADT::from_file(adt_path, &mphd_flags).ok()
         });
 
-        commands.spawn().insert(AdtParsingTask(task));
+        commands.spawn().insert(AdtParsingTask(c, task));
     }
 }
 
 fn chunk_loader(
     mut commands: Commands,
-    mut adts: ResMut<Vec<files::ADT>>,
+    mut adts: ResMut<HashMap::<coordinates::ADTPosition, Option<files::ADT>>>,
     mut chunk_tasks: Query<(Entity, &mut AdtParsingTask)>,
 ) {
     for (entity, mut task) in &mut chunk_tasks {
-        if let Some(task) = future::block_on(future::poll_once(&mut task.0)) {
-            if let Some(adt) = task {
-                println!("Adding ADT to render list: {} {}", adt.x, adt.y);
-                adts.push(adt);
-            }
+        if let Some(adt) = future::block_on(future::poll_once(&mut task.1)) {
+            adts.insert(task.0.clone(), adt);
 
             commands.entity(entity).remove::<AdtParsingTask>();
         }
@@ -476,16 +472,18 @@ fn chunk_loader(
 }
 
 fn chunk_coordinates(
-    adts: Res<Vec<files::ADT>>,
+    adts: Res<HashMap::<coordinates::ADTPosition, Option<files::ADT>>>,
     mut chunk_lookup: ResMut<HashMap<coordinates::ChunkPosition, (String, Option<chunks::adt::MTEX>, chunks::adt::MCNK)>>,
 ) {
-    for adt in adts.iter() {
-        let mtex = &adt.mtex;
-        for chunk in adt.mcnk.iter() {
-            let world_pos = coordinates::WorldPosition::from(chunk.position);
-            let chunk_pos = coordinates::ChunkPosition::from(&world_pos);
-            if chunk_lookup.get(&chunk_pos).is_none() {
-                chunk_lookup.insert(chunk_pos, (adt.filename.clone(), mtex.clone(), chunk.clone()));
+    for adt in adts.values() {
+        if let Some(adt) = adt {
+            let mtex = &adt.mtex;
+            for chunk in adt.mcnk.iter() {
+                let world_pos = coordinates::WorldPosition::from(chunk.position);
+                let chunk_pos = coordinates::ChunkPosition::from(&world_pos);
+                if chunk_lookup.get(&chunk_pos).is_none() {
+                    chunk_lookup.insert(chunk_pos, (adt.filename.clone(), mtex.clone(), chunk.clone()));
+                }
             }
         }
     }
@@ -493,26 +491,13 @@ fn chunk_coordinates(
 
 fn input(
     keys: Res<Input<KeyCode>>,
-    adts: Res<Vec<files::ADT>>,
     mut query: Query<&mut Transform, With<FlyCam>>,
     mut wireframe_config: ResMut<WireframeConfig>,
 ) {
-    let mut cam = query.single_mut();
+    let cam = query.single_mut();
 
     if keys.any_just_pressed([KeyCode::Equals]) {
         wireframe_config.global = !wireframe_config.global;
-    }
-
-    if keys.just_pressed(KeyCode::Return) {
-        let center_adt = &adts[adts.len() / 2];
-        let center_chunk = &center_adt.mcnk[center_adt.mcnk.len() / 2];
-        let initial_position = Vec3::new(
-            center_chunk.position.x,
-            center_chunk.position.z,
-            center_chunk.position.y,
-        );
-
-        cam.translation = initial_position;
     }
 
     if keys.just_pressed(KeyCode::C) && keys.pressed(KeyCode::LControl) {

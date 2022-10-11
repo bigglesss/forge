@@ -9,7 +9,7 @@ pub static CHUNK_LEEWAY: f32 = 0.001;
 
 /// ADT block coordinates.
 /// Ranges from (0, 0) to (64, 64), where (32, 32) is the center.
-#[derive(Debug, Eq, Hash, PartialEq)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
 pub struct ADTPosition {
     pub x: u32,
     pub y: u32,
@@ -17,16 +17,20 @@ pub struct ADTPosition {
 
 impl From<&WorldPosition> for ADTPosition {
     fn from(position: &WorldPosition) -> Self {
+        // TODO: Why do I need to flip the ADT values here?
+        // wowdev.wiki claims that ADTs are stored as Map_X_Y.adt.
+        // My coordinates map up correctly when I use them in-game,
+        // so I don't think I've flipped any axes anywhere.
         Self {
-            x: ((17066.66656 - position.x) / ADT_SIZE).floor() as u32,
-            y: ((17066.66656 - position.y) / ADT_SIZE).floor() as u32,
+            x: ((17066.66656 - position.y) / ADT_SIZE).floor() as u32,
+            y: ((17066.66656 - position.x) / ADT_SIZE).floor() as u32,
         }
     }
 }
 
 /// Chunk coordinates within an ADT.
 /// Ranges from (0, 0) to (16, 16).
-#[derive(Debug, Eq, Hash, PartialEq)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
 pub struct ChunkPosition {
     pub x: i32,
     pub y: i32,
@@ -55,7 +59,7 @@ impl From<&WorldPosition> for ChunkPosition {
 
 /// Helper type to handle converting between Bevy and WoW coordinate systems.
 /// Stores positions in WoW format by default (Z = up).
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WorldPosition {
     pub x: f32,
     pub y: f32,
