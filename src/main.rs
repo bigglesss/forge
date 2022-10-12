@@ -5,7 +5,9 @@ use bevy::{
     render::{render_resource::{Extent3d, TextureDimension, TextureFormat}, settings::WgpuSettings},
     utils::hashbrown::HashMap, pbr::wireframe::{WireframePlugin, WireframeConfig}, tasks::{AsyncComputeTaskPool, Task}, time::FixedTimestep
 };
-use bevy_egui::{egui::{self, Color32}, EguiContext, EguiPlugin};
+
+use bevy_egui::{egui::{self, Color32, TextureFilter, TextureId, Vec2 as BevyVec2}, EguiContext, EguiPlugin};
+use egui_extras::RetainedImage;
 
 use bevy::render::mesh::{self, PrimitiveTopology};
 use bevy::render::{render_resource::SamplerDescriptor, texture::ImageSampler};
@@ -24,7 +26,7 @@ use wow_chunky::{chunks, files};
 mod materials;
 mod coordinates;
 
-static CHUNK_RENDER_DISTANCE: u32 = 10;
+static CHUNK_RENDER_DISTANCE: u32 = 4;
 
 fn main() {
     let wdt = files::WDT::from_file(PathBuf::from("./test_data/Azeroth/Azeroth.wdt"))
@@ -44,6 +46,8 @@ fn main() {
         .insert_resource(wdt)
 
         .insert_resource(HashMap::<(String, usize), Handle<Image>>::new())
+        .insert_resource(HashMap::<(String, (u32, u32), usize), Handle<Image>>::new())
+
         .insert_resource(HashMap::<coordinates::ADTPosition, Vec<Entity>>::new())
         .insert_resource(HashMap::<coordinates::ChunkPosition, (String, Option<chunks::adt::MTEX>, chunks::adt::MCNK)>::new())
 
@@ -163,6 +167,7 @@ fn render_terrain(
     mut water_materials: ResMut<Assets<WaterMaterial>>,
     mut textures: ResMut<Assets<Image>>,
     adts: Res<HashMap<coordinates::ADTPosition, Option<files::ADT>>>,
+    mut alpha_lookup: ResMut<HashMap<(String, (u32, u32), usize), Handle<Image>>>,
     mut blp_lookup: ResMut<HashMap<(String, usize), Handle<Image>>>,
     mut adt_entities_lookup: ResMut<HashMap<coordinates::ADTPosition, Vec<Entity>>>,
 ) {
@@ -202,6 +207,7 @@ fn render_terrain(
 
                 for (i, alpha_layer) in chunk.mcal.layers.iter().enumerate() {
                     let alpha_map = process_alpha_map(&alpha_layer.alpha_map, &mut textures);
+                    alpha_lookup.insert((adt.filename.clone(), (chunk.x, chunk.y), i), alpha_map.clone());
                     alphas[i] = Some(alpha_map);
                 }
 
@@ -430,8 +436,6 @@ fn chunk_queuer(
         }
     });
 
-    println!("Attempting to load {:?} adts", adt_coords.len());
-
     // Add ADT load futures to the queue. 
     for c in adt_coords {
         let adt_name = format!("{}_{}_{}.adt", wdt.path.file_stem().and_then(|n| n.to_str()).expect("WDT should have a extension."), c.x, c.y);
@@ -499,32 +503,70 @@ fn input(
 fn ui(
     mut egui_context: ResMut<EguiContext>,
     query: Query<&mut Transform, With<FlyCam>>,
-    chunk_lookup: ResMut<HashMap<coordinates::ChunkPosition, (String, Option<chunks::adt::MTEX>, chunks::adt::MCNK)>>,
+    chunk_lookup: Res<HashMap<coordinates::ChunkPosition, (String, Option<chunks::adt::MTEX>, chunks::adt::MCNK)>>,
     chunk_tasks: Query<(Entity, &mut AdtParsingTask)>,
+    blp_lookup: Res<HashMap<(String, usize), Handle<Image>>>,
+    alpha_lookup: Res<HashMap<(String, (u32, u32), usize), Handle<Image>>>,
 ) {
     let cam_pos: Vec3 = query.single().translation;
     let world_pos = coordinates::WorldPosition::from(cam_pos);
     let chunk_pos = coordinates::ChunkPosition::from(&world_pos);
     let location = chunk_lookup.get(&chunk_pos);
 
-    egui::Window::new("Chunk info")
-        .min_width(450.0)
-        .show(egui_context.ctx_mut(), |ui| {
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.colored_label(Color32::LIGHT_YELLOW, format!("Loading {} chunks", chunk_tasks.iter().count()));
-                    ui.label(format!("Position: {:?}", cam_pos));
+    // TODO: Display textures + alpha maps of current on screen.
 
-                    if let Some(location) = location {
-                        let (adt, mtex, chunk) = location;
+    if let Some(location) = location {
+        let (adt, mtex, chunk) = location;
+
+        let textures: Vec<TextureId> = chunk.mcly.layers.iter().map(|l| {
+            let blp_handle = blp_lookup.get(&(adt.clone(), l.texture_id as usize)).unwrap();
+            let bevy_texture_id = egui_context.add_image(
+                blp_handle.clone()
+            );
+            bevy_texture_id
+        }).collect();
+
+        let alpha_maps: Vec<TextureId> = chunk.mcal.layers.iter().enumerate().map(|(i, l)| {
+            let alpha_handle = alpha_lookup.get(&(adt.clone(), (chunk.x, chunk.y), i)).unwrap();
+            let bevy_texture_id = egui_context.add_image(
+                alpha_handle.clone()
+            );
+            bevy_texture_id
+        }).collect();
+
+        egui::SidePanel::left("Chunk info")
+            .min_width(450.0)
+            .show(egui_context.ctx_mut(), |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.colored_label(Color32::LIGHT_YELLOW, format!("Loading {} chunks", chunk_tasks.iter().count()));
+                        ui.label(format!("Position: {:?}", cam_pos));
+
                         ui.label(format!(
                             "Chunk: ({}) ({}, {}) {:#?}",
                             adt, chunk.x, chunk.y, chunk.mcly.layers
                         ));
                         ui.label(format!("Textures: {:#?}", mtex.as_ref().unwrap()));
                         ui.label(format!("Water: {:#?}", chunk.mclq));
+                    });
+            });
+        
+        egui::Window::new("Textures + Alphas")
+            .anchor(egui::Align2::RIGHT_TOP, BevyVec2::new(0.0, 0.0))
+            .show(egui_context.ctx_mut(), |ui| {
+                ui.add(egui::widgets::Image::new(textures[0], [128.0, 128.0]));
+
+                if textures.len() > 1 {
+                    for (i, t) in textures.into_iter().skip(1).enumerate() {
+                        let a = alpha_maps[i];
+
+                        ui.horizontal(|ui| {
+                            ui.add(egui::widgets::Image::new(t, [128.0, 128.0]));
+                            ui.add(egui::widgets::Image::new(a, [128.0, 128.0]));
+                        });
                     }
-                });
-        });
+                }
+            });
+    }
 }
