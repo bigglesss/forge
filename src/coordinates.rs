@@ -15,6 +15,25 @@ pub struct ADTPosition {
     pub y: u32,
 }
 
+impl ADTPosition {
+    pub fn get_adts_in_range(self: Self, range: u32) -> Vec<ADTPosition> {
+        if range == 0 {
+            return vec![self]
+        }
+
+        let mut adts: Vec<ADTPosition> = Vec::new();
+        for x in 0..=range {
+            for y in 0..=range {
+                let adt_x = self.x - (range/2) + x;
+                let adt_y = self.y - (range/2) + y;
+                adts.push(ADTPosition{x: adt_x, y: adt_y});
+            }
+        }
+
+        adts
+    }
+}
+
 impl From<&WorldPosition> for ADTPosition {
     fn from(position: &WorldPosition) -> Self {
         // TODO: Why do I need to flip the ADT values here?

@@ -24,22 +24,7 @@ use wow_chunky::{chunks, files};
 mod materials;
 mod coordinates;
 
-fn get_adts_in_range(origin: coordinates::ADTPosition, range: u32) -> Vec<coordinates::ADTPosition> {
-    if range == 0 {
-        return vec![origin]
-    }
-
-    let mut adts: Vec<coordinates::ADTPosition> = Vec::new();
-    for x in 0..=range {
-        for y in 0..=range {
-            let adt_x = origin.x - (range/2) + x;
-            let adt_y = origin.y - (range/2) + y;
-            adts.push(coordinates::ADTPosition{x: adt_x, y: adt_y});
-        }
-    }
-
-    adts
-}
+static CHUNK_RENDER_DISTANCE: u32 = 10;
 
 fn main() {
     let wdt = files::WDT::from_file(PathBuf::from("./test_data/Azeroth/Azeroth.wdt"))
@@ -181,6 +166,8 @@ fn render_terrain(
     mut blp_lookup: ResMut<HashMap<(String, usize), Handle<Image>>>,
     mut adt_entities_lookup: ResMut<HashMap<coordinates::ADTPosition, Vec<Entity>>>,
 ) {
+    // TODO: Sort ADTs by their distance to the camera, and load in order.
+
     for (position, adt) in adts.iter() {
         // Skip ADTs we've already loaded.
         if adt_entities_lookup.get(position).is_some() {
@@ -218,7 +205,7 @@ fn render_terrain(
                     alphas[i] = Some(alpha_map);
                 }
 
-                let chunk_entities = create_chunk_heightmesh(
+                let chunk_entities = create_chunk_meshes(
                     &mut commands,
                     &mut meshes,
                     &mut materials,
@@ -235,7 +222,7 @@ fn render_terrain(
     }
 }
 
-fn create_chunk_heightmesh(
+fn create_chunk_meshes(
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<CustomMaterial>>,
@@ -407,7 +394,7 @@ fn chunk_queuer(
     mut commands: Commands,
     camera: Query<&mut Transform, With<FlyCam>>,
     wdt: Res<files::WDT>,
-    adts: Res<HashMap<coordinates::ADTPosition, Option<files::ADT>>>,
+    mut adts: ResMut<HashMap<coordinates::ADTPosition, Option<files::ADT>>>,
     mut adt_entities_lookup: ResMut<HashMap<coordinates::ADTPosition, Vec<Entity>>>,
     chunk_tasks: Query<(Entity, &mut AdtParsingTask)>,
 ) {
@@ -417,7 +404,7 @@ fn chunk_queuer(
     let adt_pos = coordinates::ADTPosition::from(&game_pos);
 
     // Get a list of ADTs that we actually need loaded at this point in time.
-    let adt_coords = get_adts_in_range(adt_pos, 4);
+    let adt_coords = adt_pos.get_adts_in_range(CHUNK_RENDER_DISTANCE);
 
     // Skip this cycle if the ADTs are already loaded.
     if adt_coords.iter().all(|k| adts.contains_key(k)) {
@@ -433,7 +420,7 @@ fn chunk_queuer(
     // Despawn any ADTs we have loaded already that are out of range.
     adt_entities_lookup.retain(|k, v| {
         if !adt_coords.contains(k) {
-            println!("Despawning: {:?}", k);
+            adts.remove(k);
             for e in v {
                 commands.entity(*e).despawn();
             }
@@ -443,7 +430,7 @@ fn chunk_queuer(
         }
     });
 
-    println!("Attempting to load adts: {:?}", adt_coords);
+    println!("Attempting to load {:?} adts", adt_coords.len());
 
     // Add ADT load futures to the queue. 
     for c in adt_coords {
